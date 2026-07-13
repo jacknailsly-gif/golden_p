@@ -1,0 +1,11 @@
+name: golden_p
+description: A Flutter project using tflite_flutter
+dependencies:
+  flutter:
+    sdk: flutter
+  tflite_flutter: ^0.9.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true

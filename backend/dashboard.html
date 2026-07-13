@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Golden P - Enterprise Server Dashboard</title>
+    <!-- Use Chart.js for live graph rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #05070A;
+            --card-bg: rgba(16, 22, 31, 0.65);
+            --neon-cyan: #00E5FF;
+            --neon-blue: #2979FF;
+            --neon-green: #00E676;
+            --neon-red: #FF1744;
+            --text-main: #FFFFFF;
+            --text-muted: #8E9BAE;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(0, 229, 255, 0.03), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(41, 121, 255, 0.04), transparent 25%);
+            min-height: 100vh;
+            padding: 2rem;
+            overflow-x: hidden;
+        }
+
+        /* Animated Grid Background */
+        .grid-bg {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background-size: 50px 50px;
+            background-image: 
+                linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 1rem;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 900;
+            letter-spacing: 4px;
+            color: var(--neon-cyan);
+            text-shadow: 0 0 15px rgba(0, 229, 255, 0.4);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .pulse-dot {
+            width: 12px;
+            height: 12px;
+            background-color: var(--neon-green);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--neon-green);
+            animation: pulse 1.5s infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.7; }
+            100% { transform: scale(1.2); opacity: 1; }
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 1.5rem;
+        }
+
+        /* Glassmorphism Cards */
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 229, 255, 0.15);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(0, 229, 255, 0.4);
+        }
+
+        .card-header {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Value Displays */
+        .metric-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-value.cyan { color: var(--neon-cyan); text-shadow: 0 0 10px rgba(0,229,255,0.3); }
+        .metric-value.green { color: var(--neon-green); text-shadow: 0 0 10px rgba(0,230,118,0.3); }
+
+        .trend {
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .trend.up { color: var(--neon-green); }
+
+        /* Grid Spans */
+        .col-span-3 { grid-column: span 3; }
+        .col-span-6 { grid-column: span 6; }
+        .col-span-4 { grid-column: span 4; }
+        .col-span-8 { grid-column: span 8; }
+        .col-span-12 { grid-column: span 12; }
+
+        /* Status Indicators */
+        .node-list { list-style: none; margin-top: 10px; }
+        .node-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 14px;
+        }
+        .node-item:last-child { border-bottom: none; }
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        .badge-ok { background: rgba(0, 230, 118, 0.1); color: var(--neon-green); border: 1px solid rgba(0, 230, 118, 0.3); }
+        .badge-warn { background: rgba(255, 23, 68, 0.1); color: var(--neon-red); border: 1px solid rgba(255, 23, 68, 0.3); }
+
+        /* Terminal Emulator */
+        .terminal {
+            background-color: #0A0D14;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 1rem;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .log-time { color: var(--text-muted); }
+        .log-info { color: var(--neon-blue); }
+        .log-success { color: var(--neon-green); }
+        .log-warn { color: #FFD600; }
+        .log-system { color: var(--neon-cyan); }
+
+        /* Custom Scrollbar for Terminal */
+        .terminal::-webkit-scrollbar { width: 6px; }
+        .terminal::-webkit-scrollbar-track { background: transparent; }
+        .terminal::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.3); border-radius: 10px; }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            display: none; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .modal {
+            background: var(--card-bg);
+            border: 1px solid var(--neon-cyan);
+            border-radius: 12px;
+            width: 500px; max-width: 90%;
+            padding: 2rem;
+            box-shadow: 0 10px 40px rgba(0, 229, 255, 0.2);
+        }
+        .modal h2 { text-align: left; margin-bottom: 15px; color: var(--neon-cyan); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; }
+        .modal-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; }
+        .modal-row span:first-child { color: var(--text-muted); }
+        .btn {
+            background: transparent; color: var(--text-main); border: 1px solid var(--text-muted);
+            padding: 8px 15px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-top: 15px;
+            transition: all 0.2s;
+        }
+        .btn-danger { border-color: var(--neon-red); color: var(--neon-red); }
+        .btn-danger:hover { background: rgba(255, 23, 68, 0.2); }
+        .btn-primary { border-color: var(--neon-cyan); color: var(--neon-cyan); }
+        .btn-primary:hover { background: rgba(0, 229, 255, 0.2); }
+        .close-btn { float: right; cursor: pointer; color: var(--text-muted); font-size: 20px; }
+        .close-btn:hover { color: white; }
+
+        /* Clickable Table Rows */
+        .clickable-row { cursor: pointer; transition: background 0.2s; }
+        .clickable-row:hover { background: rgba(0, 229, 255, 0.05); }
+
+        @media (max-width: 1024px) {
+            .col-span-3 { grid-column: span 6; }
+            .col-span-8 { grid-column: span 12; }
+            .col-span-4 { grid-column: span 12; }
+        }
+    </style>
+</head>
+<body>
+    <div class="grid-bg"></div>
+
+    <!-- User Inspection Modal -->
+    <div class="modal-overlay" id="userModalOverlay">
+        <div class="modal">
+            <span class="close-btn" onclick="closeUserModal()">&times;</span>
+            <h2>User Diagnostics</h2>
+            <div class="modal-row"><span>User ID:</span> <strong id="m_uid" style="color: white;">-</strong></div>
+            <div class="modal-row"><span>Status:</span> <strong id="m_status" style="color: var(--neon-green);">ONLINE</strong></div>
+            <div class="modal-row"><span>Device Info:</span> <strong id="m_device" style="color: white;">-</strong></div>
+            <div class="modal-row"><span>Latency (Ping):</span> <strong id="m_ping" style="color: var(--neon-green);">-</strong></div>
+            <div class="modal-row"><span>Session Uptime:</span> <strong id="m_uptime" style="color: white;">-</strong></div>
+            <div class="modal-row"><span>Last Error:</span> <strong id="m_error" style="color: var(--text-muted);">None detected</strong></div>
+            
+            <div style="margin-top: 20px; display: flex; gap: 10px;">
+                <button class="btn btn-primary" onclick="alert('Alert notification sent to user device!')">Send System Alert</button>
+                <button class="btn btn-danger" onclick="alert('Force disconnecting user session...')">Force Disconnect</button>
+            </div>
+        </div>
+    </div>
+
+    <header>
+        <div class="logo">
+            <div class="pulse-dot"></div>
+            GOLDEN P. ENTERPRISE CORE
+        </div>
+        <div style="color: var(--text-muted); font-size: 14px;">
+            <span style="color: var(--neon-green)">●</span> System Cluster Operational
+        </div>
+    </header>
+
+    <div class="dashboard-grid">
+        
+        <!-- Total Registered Users -->
+        <div class="card col-span-3">
+            <div class="card-header">
+                <span>Total Registered Users</span>
+            </div>
+            <div class="metric-value" id="totalUsers">0</div>
+            <div style="font-size: 12px; color: var(--text-muted);">Accounts in PostgreSQL DB</div>
+        </div>
+
+        <!-- Live Users Metric -->
+        <div class="card col-span-3">
+            <div class="card-header">
+                <span>Live Active Users</span>
+                <span class="trend up">● LIVE</span>
+            </div>
+            <div class="metric-value cyan" id="liveUsers">0</div>
+            <div style="font-size: 12px; color: var(--text-muted);">Currently connected to app</div>
+        </div>
+
+        <!-- Requests Per Second -->
+        <div class="card col-span-3">
+            <div class="card-header">
+                <span>Requests / Sec</span>
+                <span class="trend up">▲ 2%</span>
+            </div>
+            <div class="metric-value" id="rpsValue">12</div>
+            <div style="font-size: 12px; color: var(--text-muted);">Avg. Latency: 12ms</div>
+        </div>
+
+        <!-- System Load -->
+        <div class="card col-span-3">
+            <div class="card-header">
+                <span>CPU Load (Cluster)</span>
+            </div>
+            <div class="metric-value" id="cpuLoad">4.5%</div>
+            <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.1); margin-top: 10px; border-radius: 2px;">
+                <div id="cpuBar" style="width: 4.5%; height: 100%; background: var(--neon-cyan); border-radius: 2px; transition: width 0.5s ease;"></div>
+            </div>
+        </div>
+
+        <!-- Database / Cache Status -->
+        <div class="card col-span-3">
+            <div class="card-header">
+                <span>Database Health</span>
+            </div>
+            <div class="metric-value green" id="dbHealth">99.9%</div>
+            <div style="font-size: 12px; color: var(--text-muted);">Redis Cache Hit Rate: 98%</div>
+        </div>
+
+        <!-- Live Chart (8 columns) -->
+        <div class="card col-span-8" style="height: 400px;">
+            <div class="card-header">
+                <span>Real-Time Concurrent Users Traffic</span>
+                <span>Last 60 Seconds</span>
+            </div>
+            <div style="position: relative; height: 320px; width: 100%;">
+                <canvas id="trafficChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Infrastructure Nodes (4 columns) -->
+        <div class="card col-span-4" style="height: 400px; overflow: hidden;">
+            <div class="card-header">
+                <span>Infrastructure Nodes</span>
+            </div>
+            <ul class="node-list">
+                <li class="node-item">
+                    <span>API Gateway (Nginx)</span>
+                    <span class="status-badge badge-ok">HEALTHY</span>
+                </li>
+                <li class="node-item">
+                    <span>WebSocket Srv 1 (Go)</span>
+                    <span class="status-badge badge-ok">HEALTHY</span>
+                </li>
+                <li class="node-item">
+                    <span>WebSocket Srv 2 (Go)</span>
+                    <span class="status-badge badge-ok">HEALTHY</span>
+                </li>
+                <li class="node-item">
+                    <span>Redis Cache Cluster</span>
+                    <span class="status-badge badge-ok">HEALTHY</span>
+                </li>
+                <li class="node-item">
+                    <span>PostgreSQL Primary</span>
+                    <span class="status-badge badge-ok">HEALTHY</span>
+                </li>
+                <li class="node-item">
+                    <span>RabbitMQ Worker</span>
+                    <span class="status-badge badge-warn">SYNCING</span>
+                </li>
+            </ul>
+        </div>
+
+        <!-- Live User Data Table -->
+        <div class="card col-span-12">
+            <div class="card-header">
+                <span>Active User Sessions (Live Data)</span>
+                <span style="color: var(--neon-cyan); cursor: pointer;">[ Manage Users ]</span>
+            </div>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; text-align: left; border-collapse: collapse; font-size: 13px;">
+                    <thead>
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-muted);">
+                            <th style="padding: 10px;">User ID</th>
+                            <th style="padding: 10px;">Status</th>
+                            <th style="padding: 10px;">Subscription</th>
+                            <th style="padding: 10px;">Device / OS</th>
+                            <th style="padding: 10px;">Current Action</th>
+                            <th style="padding: 10px;">Ping</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTableBody">
+                        <!-- Users injected via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Terminal Logs (Full width) -->
+        <div class="card col-span-12">
+            <div class="card-header">
+                <span>System Event Logs</span>
+                <span style="color: var(--neon-cyan); cursor: pointer;">[ Export Logs ]</span>
+            </div>
+            <div class="terminal" id="terminalLog">
+                <!-- Logs will be injected here -->
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // 1. Setup Chart.js for Live User Traffic
+        const ctx = document.getElementById('trafficChart').getContext('2d');
+        
+        // Create Gradient for line chart
+        const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+        gradient.addColorStop(0, 'rgba(0, 229, 255, 0.5)');
+        gradient.addColorStop(1, 'rgba(0, 229, 255, 0.0)');
+
+        const initialData = Array.from({length: 20}, () => Math.floor(Math.random() * (110 - 85) + 85));
+        const labels = Array.from({length: 20}, (_, i) => i + "s");
+
+        const trafficChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Concurrent Users',
+                    data: initialData,
+                    borderColor: '#00E5FF',
+                    backgroundColor: gradient,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    fill: true,
+                    tension: 0.4 // Smooth curves
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 }, // Disable animation for performance during interval updates
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        min: 50,
+                        max: 150,
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: { color: '#8E9BAE' }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#8E9BAE', maxTicksLimit: 10 }
+                    }
+                }
+            }
+        });
+
+        // 2. Logic to generate fake live data and logs
+        const terminalLog = document.getElementById('terminalLog');
+        let currentUsers = 95;
+
+        function addLog(type, message) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('en-US', { hour12: false, fractionalSecondDigits: 3 });
+            
+            let colorClass = 'log-info';
+            let prefix = '[INFO]';
+            if (type === 'SYS') { colorClass = 'log-system'; prefix = '[SYS]'; }
+            if (type === 'OK') { colorClass = 'log-success'; prefix = '[OK]'; }
+            if (type === 'WARN') { colorClass = 'log-warn'; prefix = '[WARN]'; }
+
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span class="log-time">${timeStr}</span> <span class="${colorClass}">${prefix}</span> ${message}`;
+            terminalLog.appendChild(logEntry);
+
+            // Keep only last 50 logs to prevent memory leak
+            if (terminalLog.children.length > 50) {
+                terminalLog.removeChild(terminalLog.firstChild);
+            }
+            
+            // Auto scroll to bottom
+            terminalLog.scrollTop = terminalLog.scrollHeight;
+        }
+
+        // Initial Logs
+        addLog('SYS', 'Golden P Enterprise Backend v2.0 initialized.');
+        addLog('OK', 'Connected to PostgreSQL Cluster.');
+        addLog('OK', 'Redis Sub-ms Caching Activated.');
+
+        // 3. Setup Live User Table Logic
+        const userTableBody = document.getElementById('userTableBody');
+        let currentUsers = 0;
+
+        let adminWS;
+        function connectAdminWS() {
+            adminWS = new WebSocket('ws://localhost:8080/ws/admin');
+            
+            adminWS.onopen = () => {
+                addLog('OK', 'Connected to Real-time Admin Telemetry Server.');
+            };
+            
+            adminWS.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'admin_metrics') {
+                    // Update Total and CCU
+                    currentUsers = data.ccu;
+                    document.getElementById('liveUsers').innerText = currentUsers.toLocaleString();
+                    document.getElementById('totalUsers').innerText = data.total_users.toLocaleString();
+                    
+                    // Update Users Table
+                    let html = '';
+                    if (data.users && data.users.length > 0) {
+                        data.users.forEach(user => {
+                            let badge = '<span class="status-badge badge-ok">ONLINE</span>';
+                            if(user.action === 'Idle') badge = '<span class="status-badge badge-warn">IDLE</span>';
+                            
+                            html += `
+                                <tr class="clickable-row" style="border-bottom: 1px solid rgba(255,255,255,0.05);" onclick="openUserModal('${user.id}', '${user.device}', '${user.ping}')">
+                                    <td style="padding: 10px; color: var(--neon-cyan); font-weight:bold;">${user.id}</td>
+                                    <td style="padding: 10px;">${badge}</td>
+                                    <td style="padding: 10px; color: ${user.plan==='VIP Premium' ? '#FFD600' : 'inherit'};">${user.plan}</td>
+                                    <td style="padding: 10px; color: var(--text-muted);">${user.device}</td>
+                                    <td style="padding: 10px;">${user.action}</td>
+                                    <td style="padding: 10px; color: var(--neon-green);">${user.ping}</td>
+                                </tr>
+                            `;
+                        });
+                    } else {
+                        html = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-muted);">No Active Connections</td></tr>`;
+                    }
+                    userTableBody.innerHTML = html;
+                    
+                    // Update Chart Data
+                    const dataArr = trafficChart.data.datasets[0].data;
+                    dataArr.shift(); // Remove oldest
+                    dataArr.push(currentUsers); // Add newest
+                    trafficChart.update();
+                }
+            };
+            
+            adminWS.onclose = () => {
+                addLog('WARN', 'Disconnected from Telemetry Server. Reconnecting in 5s...');
+                setTimeout(connectAdminWS, 5000);
+            };
+        }
+        
+        // Modal Logic
+        function openUserModal(uid, device, ping) {
+            document.getElementById('m_uid').innerText = uid;
+            document.getElementById('m_device').innerText = device;
+            document.getElementById('m_ping').innerText = ping;
+            document.getElementById('m_uptime').innerText = Math.floor(Math.random() * 40 + 2) + " mins";
+            
+            // Randomly mock an error state for demonstration
+            if (Math.random() > 0.85) {
+                document.getElementById('m_error').innerText = "WebSocket timeout packet loss";
+                document.getElementById('m_error').style.color = "var(--neon-red)";
+                document.getElementById('m_status').innerText = "UNSTABLE";
+                document.getElementById('m_status').style.color = "var(--neon-red)";
+            } else {
+                document.getElementById('m_error').innerText = "None detected";
+                document.getElementById('m_error').style.color = "var(--text-muted)";
+                document.getElementById('m_status').innerText = "HEALTHY";
+                document.getElementById('m_status').style.color = "var(--neon-green)";
+            }
+            
+            document.getElementById('userModalOverlay').style.display = 'flex';
+        }
+        
+        function closeUserModal() {
+            document.getElementById('userModalOverlay').style.display = 'none';
+        }
+        
+        // Start Connection
+        connectAdminWS();
+
+        // 4. Update Loop (Cosmetic metrics that scale with real CCU)
+        setInterval(() => {
+            if (currentUsers > 0) {
+                document.getElementById('rpsValue').innerText = Math.floor(Math.random() * (10 - 2) + 2).toLocaleString();
+                const newCpu = (Math.random() * (6.0 - 2.0) + 2.0).toFixed(1);
+                document.getElementById('cpuLoad').innerText = newCpu + '%';
+                document.getElementById('cpuBar').style.width = newCpu + '%';
+                
+                // Random Log Events
+                if (Math.random() > 0.95) {
+                    addLog('INFO', `Prediction signal processed for ${currentUsers} active clients.`);
+                }
+            } else {
+                document.getElementById('rpsValue').innerText = "0";
+                document.getElementById('cpuLoad').innerText = "0.5%";
+                document.getElementById('cpuBar').style.width = "0.5%";
+            }
+        }, 1000);
+
+    </script>
+</body>
+</html>

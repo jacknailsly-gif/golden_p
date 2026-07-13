@@ -1,0 +1,73 @@
+﻿
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:111:  String? _lastFailedPrediction;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1214:        _lastFailedPrediction 
+= actualPlayed;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1225:        _lastFailedPrediction 
+= null;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1543:    // V14.4 Context fix: 
+Analyze against _lastFailedPrediction 
+instead of AI ghost prediction
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1544:    if (_lastFailedPrediction 
+== _penultimatePredictedChar &&
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1545:        _lastFailedPrediction 
+!= actualValue) {
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1548:          _consecutiveFailuresP
+erAction[_lastFailedPrediction!] ?? 0;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1549:      _consecutiveFailuresPerAc
+tion[_lastFailedPrediction!] = 
+currentFails + 1;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1573:    if (_lastFailedPrediction 
+!= null) {
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1576:      _counterMoveMemory[patter
+nContext]![_lastFailedPrediction!] = 
+actualValue;
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:1578:        '[V14.4 CONTEXT 
+AWARENESS] Memorized Counter-Move: In 
+"$patternContext", $_lastFailedPrediction 
+-> $actualValue',
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:2298:    if (_lastFailedPrediction 
+!= null) {
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:2299:      
+forbiddenSet.add(_lastFailedPrediction!);
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:2301:        "[USER RULE] 🛡️ HARD 
+BLOCK on '$_lastFailedPrediction' because 
+it caused a loss last round. (Always 
+Active)",
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:2527:          "[V9.0 REACTIVE] 
+Passed $_lastFailureCause to 
+TimeSeriesEngine. (Last failed: 
+$_lastFailedPrediction)",
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:3212:        var deadlockFallback = 
+buttonValues.where((e) => e != 
+_lastFailedPrediction).toList();
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:3273:          .where((e) => 
+!forbiddenSet.contains(e) && e != 
+_lastFailedPrediction)
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:3291:    if (_primaryPrediction == 
+_lastFailedPrediction && 
+_lastFailedPrediction != null) {
+lib\viewmodels\sequence_analyzer_viewmodel
+.dart:3292:      final List<String> 
+lastResortOptions = 
+buttonValues.where((e) => e != 
+_lastFailedPrediction).toList();
+
+

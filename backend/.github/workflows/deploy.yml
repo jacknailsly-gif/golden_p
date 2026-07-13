@@ -1,0 +1,33 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Run Unit Tests
+        run: go test ./... -v
+
+      - name: Build Docker Image
+        run: docker build -t golden_p/backend:${{ github.sha }} .
+
+  deploy:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Kubernetes (Blue/Green)
+        run: |
+          echo "Simulating Blue/Green Deployment to AWS EKS or GCP GKE"
+          echo "kubectl set image deployment/backend backend=golden_p/backend:${{ github.sha }}"

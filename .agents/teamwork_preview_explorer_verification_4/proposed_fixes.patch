@@ -1,0 +1,72 @@
+diff --git a/lib/viewmodels/overlay_buttons_viewmodel.dart b/lib/viewmodels/overlay_buttons_viewmodel.dart
+--- a/lib/viewmodels/overlay_buttons_viewmodel.dart
++++ b/lib/viewmodels/overlay_buttons_viewmodel.dart
+@@ -91,10 +91,18 @@
+   String get stopReason => _stopReason;
++  bool _isFixedPatternEnabled = true;
++  bool get isFixedPatternEnabled => _isFixedPatternEnabled;
++  set isFixedPatternEnabled(bool val) {
++    _isFixedPatternEnabled = val;
++    _prefs.setBool('overlay_fixed_pattern_enabled', val);
++    notifyListeners();
++  }
+ 
+   // Break Getters
+   bool get isBreakActive => _isBreakActive;
+   int get breakMinutesRemaining => _breakMinutesRemaining;
+ 
+   OverlayButtonsViewModel() {
+     _initializeButtons();
+   }
+@@ -122,6 +130,7 @@
+     _maxM5Steps = _prefs.getInt('max_m5_steps') ?? 5;
+ 
+     _webViewTextZoom = _prefs.getInt('webview_text_zoom') ?? 100;
++    _isFixedPatternEnabled = _prefs.getBool('overlay_fixed_pattern_enabled') ?? true;
+   }
+ 
+   void toggleControlCollapsed() {
+@@ -773,13 +782,18 @@
+-      // V66.0: Brainless Fixed Pattern Logic (Requested by user)
+-      // Completely bypasses Ghost Rounds, Trap Breakers, and AI logic.
+-      String prediction = 'A';
+-      
+-      if (_currentFixedPattern == 'BCBC') {
+-         prediction = _fixedPatternToggle ? 'B' : 'C';
+-      } else {
+-         // ACAC pattern
+-         prediction = _fixedPatternToggle ? 'A' : 'C';
+-      }
+-      
+-      _fixedPatternToggle = !_fixedPatternToggle; // Toggle for next round
++      // V66.0: Brainless Fixed Pattern Logic (Requested by user)
++      // Completely bypasses Ghost Rounds, Trap Breakers, and AI logic when enabled.
++      String prediction = 'A';
++      
++      if (_isFixedPatternEnabled) {
++        if (_currentFixedPattern == 'BCBC') {
++           prediction = _fixedPatternToggle ? 'B' : 'C';
++        } else {
++           // ACAC pattern
++           prediction = _fixedPatternToggle ? 'A' : 'C';
++        }
++        _fixedPatternToggle = !_fixedPatternToggle; // Toggle for next round
++        debugPrint('[V66.0 FIXED PATTERN] 🤖 Using Pattern: $_currentFixedPattern -> Selected $prediction');
++      } else {
++        // Use AI prediction model
++        prediction = _sequenceAnalyzerViewModel?.lastPredictedChar ?? 'A';
++        debugPrint('[AI PREDICT] 🤖 Using AI model: $prediction');
++      }
+ 
+       String targetId = prediction == 'A' ? 'M1' : (prediction == 'B' ? 'M2' : 'M3');
+-      debugPrint('[V66.0 FIXED PATTERN] 🤖 Using Pattern: $_currentFixedPattern -> Selected $prediction');
+diff --git a/test/anti_tracking_test.dart b/test/anti_tracking_test.dart
+--- a/test/anti_tracking_test.dart
++++ b/test/anti_tracking_test.dart
+@@ -276,6 +276,7 @@
+       await vm.updateServerUrl('');
+       await overlayVM.initialize();
+       overlayVM.setSpeedMultiplier(1000.0);
++      overlayVM.isFixedPatternEnabled = false; // Disable fixed pattern mode to test AI prediction entropy
+ 
+       // Set unique positions to distinguish buttons

@@ -1,0 +1,27 @@
+diff --git a/lib/viewmodels/overlay_buttons_viewmodel.dart b/lib/viewmodels/overlay_buttons_viewmodel.dart
+--- a/lib/viewmodels/overlay_buttons_viewmodel.dart
++++ b/lib/viewmodels/overlay_buttons_viewmodel.dart
+@@ -1117,6 +1117,19 @@
+           _consecutiveLossesStreak++;
+           if (_isRecoveryUnlocked && !_isTrapBreakerActive) {
+             _consecutiveRecoveryLosses++;
+           } else {
+             _consecutiveSacrificeLosses++;
+           }
++
++          // --- R2: Strict 3-Loss Hard Limit / Circuit Breaker ---
++          if (_consecutiveLossesStreak >= 3) {
++            debugPrint('🚨 [CIRCUIT BREAKER] reached exactly 3 consecutive losses! Initiating escape and halt.');
++            
++            _webViewController?.reload();
++            
++            _stopReason = '🛑 CIRCUIT BREAKER: Strict 3-Loss Limit Reached. Auto-play halted.';
++            if (_sequenceAnalyzerViewModel != null) {
++              _sequenceAnalyzerViewModel.advice = '🚨 CIRCUIT BREAKER: 3-Loss Limit Reached! Webview reloaded. Auto-play halted.';
++            }
++            stopSequence();
++            break;
++          }
+           
+           // --- V45.0: The Golden Balance (Chunk Addition) ---
+           _addDebtChunk(currentBetStr);

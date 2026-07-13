@@ -1,0 +1,45 @@
+name: Mobile CI/CD (Flutter)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build_and_deploy:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Run Tests
+        run: flutter test
+
+      - name: Setup Fastlane
+        run: bundle install
+
+      # Android Build & Deploy
+      - name: Fastlane Android Deploy
+        run: bundle exec fastlane android deploy
+        env:
+          PLAY_STORE_CONFIG_JSON: ${{ secrets.PLAY_STORE_CONFIG_JSON }}
+
+      # iOS Build & Deploy
+      - name: Fastlane iOS Beta
+        run: bundle exec fastlane ios beta
+        env:
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}

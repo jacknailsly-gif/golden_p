@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: golden_p_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: golden_user
+      POSTGRES_PASSWORD: golden_password
+      POSTGRES_DB: golden_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: golden_p_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  backend_network:
+    driver: bridge

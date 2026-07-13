@@ -1,0 +1,19 @@
+default_platform(:android)
+
+platform :android do
+  desc "Deploy a new version to the Google Play Console"
+  lane :deploy do
+    gradle(task: "clean bundleRelease")
+    upload_to_play_store(track: "internal")
+  end
+end
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    get_certificates           
+    get_provisioning_profile   
+    gym(scheme: "Runner")      
+    upload_to_testflight
+  end
+end

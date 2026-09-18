@@ -384,16 +384,26 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
                       spacing: 8,
                       runSpacing: 8,
                       children: viewModel.buttons.map((btn) {
-                        return ActionChip(
-                          label: Text(btn.label),
-                          backgroundColor: btn.color.withValues(alpha: 0.6),
-                          padding: EdgeInsets.zero,
-                          labelStyle: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
+                        return GestureDetector(
+                          onTap: () => viewModel.addStep(btn.id),
+                          child: Container(
+                            width: 24,
+                            height: 24,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: btn.color.withValues(alpha: 0.8),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: Text(
+                              btn.label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
-                          onPressed: () => viewModel.addStep(btn.id),
                         );
                       }).toList(),
                     ),

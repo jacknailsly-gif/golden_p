@@ -37,6 +37,8 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
         final int losses = totalPredictions - wins;
         final double winRate = totalPredictions > 0 ? (wins / totalPredictions * 100) : 0.0;
         final double profitLoss = viewModel.profitLossValue;
+        final int maxLossStreak = viewModel.maxLossStreak;
+        final String maxLossSequence = viewModel.maxLossSequence;
 
         return Scaffold(
           backgroundColor: const Color(0xFF0F1423),
@@ -62,9 +64,13 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
             children: [
               _buildStatsHeader(winRate),
               const SizedBox(height: 24),
-              _buildPerformanceCards(totalPredictions, wins, losses, profitLoss),
+              _buildPerformanceCards(totalPredictions, wins, losses, profitLoss, maxLossStreak, maxLossSequence),
               const SizedBox(height: 24),
               _buildStopProfitSection(overlayVM),
+              const SizedBox(height: 24),
+              _buildRecoveryProfitLevelSection(overlayVM),
+              const SizedBox(height: 24),
+              _buildTrainingDataSection(overlayVM),
               const SizedBox(height: 24),
               _buildHistorySection(),
             ],
@@ -129,7 +135,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
     );
   }
 
-  Widget _buildPerformanceCards(int totalPredictions, int wins, int losses, double profitLoss) {
+  Widget _buildPerformanceCards(int totalPredictions, int wins, int losses, double profitLoss, int maxLossStreak, String maxLossSequence) {
     return Column(
       children: [
         Row(
@@ -171,6 +177,28 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 value: profitLoss >= 0 ? '+\$${profitLoss.toStringAsFixed(2)}' : '-\$${profitLoss.abs().toStringAsFixed(2)}',
                 icon: Icons.attach_money,
                 color: const Color(0xFFF59E0B),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _buildStatCard(
+                title: 'Max Losing Streak',
+                value: '$maxLossStreak',
+                icon: Icons.warning_amber_rounded,
+                color: const Color(0xFFF97316),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildStatCard(
+                title: 'Max Loss Sequence',
+                value: maxLossSequence.isEmpty ? '-' : maxLossSequence,
+                icon: Icons.history,
+                color: const Color(0xFF94A3B8),
               ),
             ),
           ],
@@ -333,6 +361,236 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
               style: TextStyle(color: Color(0xFFF59E0B), fontSize: 11),
             )
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecoveryProfitLevelSection(OverlayButtonsViewModel overlayVM) {
+    final double currentVal = overlayVM.recoveryProfitPercent;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFF3B82F6).withValues(alpha: 0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.tune_rounded, color: Color(0xFF3B82F6), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Recovery Profit Level (ระดับกำไรทวงหนี้)',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'เลือกระดับ % กำไรที่นำไปคำนวณในสมการทวงหนี้ (M5):',
+            style: TextStyle(
+              color: Color(0xFF94A3B8),
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F1423),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.1),
+              ),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<double>(
+                value: currentVal,
+                dropdownColor: const Color(0xFF1E293B),
+                isExpanded: true,
+                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                items: OverlayButtonsViewModel.recoveryProfitLevels.map((item) {
+                  return DropdownMenuItem<double>(
+                    value: item['value'] as double,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          item['label'] as String,
+                          style: TextStyle(
+                            color: item['value'] == currentVal ? const Color(0xFF3B82F6) : Colors.white,
+                            fontWeight: item['value'] == currentVal ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                        Text(
+                          '${((item['value'] as double) * 100).toInt()}%',
+                          style: const TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onChanged: (double? newValue) {
+                  if (newValue != null) {
+                    overlayVM.setRecoveryProfitPercent(newValue);
+                  }
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F1423),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.calculate_outlined, color: Color(0xFF10B981), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'สูตรทวงหนี้: M5 Bet = (หนี้สะสม + กำไร) / ${(currentVal * 100).toStringAsFixed(0)}%',
+                    style: const TextStyle(
+                      color: Color(0xFF10B981),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrainingDataSection(OverlayButtonsViewModel overlayVM) {
+    final logger = overlayVM.trainingDataLogger;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFFA855F7).withValues(alpha: 0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.science_rounded, color: Color(0xFFA855F7), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'AI Training Data Logger',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F1423),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Rows Logged: ${logger.totalRowsLogged}',
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Buffer: ${logger.bufferSize} rows (auto-save every 50)',
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                    ),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFA855F7).withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${logger.totalRowsLogged} rows',
+                    style: const TextStyle(
+                      color: Color(0xFFA855F7),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                final path = await logger.exportNow();
+                if (context.mounted) {
+                  if (path != null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('✅ Exported to: $path'),
+                        backgroundColor: const Color(0xFF10B981),
+                      ),
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('⚠️ No data to export or storage error.'),
+                        backgroundColor: Color(0xFFF59E0B),
+                      ),
+                    );
+                  }
+                }
+              },
+              icon: const Icon(Icons.file_download, size: 18),
+              label: const Text('Export Training Data (CSV)'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA855F7),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'ข้อมูลจะถูกบันทึกลง Download/golden_p_training_data/ เพื่อนำไป Train AI Model',
+            style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          ),
         ],
       ),
     );

@@ -6,6 +6,7 @@ import 'package:golden_p/viewmodels/sequence_analyzer_viewmodel.dart';
 import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/models/history_entry.dart';
 import 'package:golden_p/models/webview_tab.dart';
+import 'package:golden_p/models/game_mode.dart';
 import 'package:golden_p/widgets/overlay_buttons_panel.dart';
 
 // ─── Midnight Azure Dark Theme Colors ───
@@ -23,18 +24,29 @@ class ChromeColors {
 }
 
 class SequenceAnalyzerView extends StatefulWidget {
-  const SequenceAnalyzerView({super.key});
+  final GameMode gameMode;
+
+  const SequenceAnalyzerView({
+    super.key,
+    this.gameMode = GameMode.towers,
+  });
 
   @override
   State<SequenceAnalyzerView> createState() => _SequenceAnalyzerViewState();
 }
 
 class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
+  // ─── Dedicated ViewModel per GameMode (History & Balance 100% Isolated) ───
+  late final SequenceAnalyzerViewModel _viewModel;
+
   // ─── Tab Management ───
   final List<WebViewTab> _tabs = [];
   int _currentTabIndex = 0;
   int _tabCounter = 1;
   final GlobalKey _webViewKey = GlobalKey(); // สำหรับวัดตำแหน่ง WebView
+
+  // V123: Auto-start flag
+  bool _autoStarted = false;
 
   // Get current tab
   WebViewTab get _currentTab => _tabs[_currentTabIndex];
@@ -42,8 +54,9 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
   @override
   void initState() {
     super.initState();
-    // Create initial tab
-    _createNewTab("https://faucetpay.io/towers/Polygon");
+    _viewModel = SequenceAnalyzerViewModel(gameMode: widget.gameMode);
+    // Create initial tab with GameMode default URL
+    _createNewTab(widget.gameMode.defaultUrl);
   }
 
   @override
@@ -59,10 +72,10 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
 
   @override
   void dispose() {
-    // Dispose all tabs
     for (var tab in _tabs) {
       tab.dispose();
     }
+    _viewModel.dispose();
     super.dispose();
   }
 
@@ -70,7 +83,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
   void _createNewTab([String? initialUrl]) {
     final tab = WebViewTab(
       id: 'tab_${DateTime.now().millisecondsSinceEpoch}_${_tabCounter++}',
-      url: initialUrl ?? "https://faucetpay.io/towers/Polygon",
+      url: initialUrl ?? widget.gameMode.defaultUrl,
     );
 
     // Add focus listener for URL bar
@@ -134,17 +147,13 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
     if (!mounted || _tabs.isEmpty) return;
     final controller = _currentTab.controller;
     if (controller == null) return;
-    final analyzerViewModel = Provider.of<SequenceAnalyzerViewModel>(
-      context,
-      listen: false,
-    );
     final overlayViewModel = Provider.of<OverlayButtonsViewModel>(
       context,
       listen: false,
     );
-    analyzerViewModel.setWebViewController(controller);
-    overlayViewModel.setWebViewController(controller);
-    overlayViewModel.setSequenceAnalyzerViewModel(analyzerViewModel);
+    _viewModel.setWebViewController(controller, mode: widget.gameMode);
+    overlayViewModel.setWebViewController(controller, mode: widget.gameMode);
+    overlayViewModel.setSequenceAnalyzerViewModel(_viewModel, mode: widget.gameMode);
     _updateWebViewOffset();
   }
 
@@ -443,11 +452,11 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 40.0),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 40.0),
             child: Text(
-              "Midnight Azure Analyzer",
-              style: TextStyle(
+              widget.gameMode.fullTitle,
+              style: const TextStyle(
                 color: Color(0xFF3B82F6), // Azure Blue
                 fontSize: 16,
                 fontWeight: FontWeight.w800,
@@ -581,8 +590,8 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
             initialUrlRequest: URLRequest(url: WebUri(t.url)),
             initialSettings: InAppWebViewSettings(
               useShouldOverrideUrlLoading: true,
-              useWideViewPort: true,
-              loadWithOverviewMode: true,
+              useWideViewPort: false,
+              loadWithOverviewMode: false,
               supportZoom: false,
             ),
             shouldOverrideUrlLoading: (controller, navigationAction) async {
@@ -657,10 +666,33 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
 
                 // Inject a global click listener and apply native viewport scaling
                 if (!mounted) return;
-                final zoom = Provider.of<OverlayButtonsViewModel>(
+                final overlayVM = Provider.of<OverlayButtonsViewModel>(
                   context,
                   listen: false,
-                ).webViewTextZoom;
+                );
+                final zoom = overlayVM.webViewTextZoom;
+
+                // Auto-start bot on launch for Towers
+                if (!_autoStarted &&
+                    widget.gameMode == GameMode.towers &&
+                    t.url.contains('faucetpay.io/play/towers')) {
+                  _autoStarted = true;
+                  debugPrint('[AUTO-START] 🚀 Auto-starting Towers bot in 5 seconds...');
+                  Future.delayed(const Duration(seconds: 5), () async {
+                    if (mounted) {
+                      debugPrint('[AUTO-START] 🔧 Ensuring Towers difficulty is Medium (Level 7: 42%)...');
+                      await overlayVM.ensureDifficulty(mode: GameMode.towers);
+                      
+                      await Future.delayed(const Duration(seconds: 2));
+                      if (mounted && !overlayVM.isRunningForMode(GameMode.towers)) {
+                        debugPrint('[AUTO-START] 🟢 Executing Auto-Start for Towers!');
+                        overlayVM.startSequence(mode: GameMode.towers);
+                      }
+                    }
+                  });
+                }
+
+
                 controller.evaluateJavascript(
                   source:
                       """
@@ -675,9 +707,11 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                   if (meta) meta.remove();
                   var m = document.createElement('meta');
                   m.name = 'viewport';
-                  m.content = 'width=' + (window.screen.width / scale) + ', initial-scale=' + scale + ', maximum-scale=' + scale + ', minimum-scale=' + scale + ', user-scalable=no';
+                  m.content = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, shrink-to-fit=no';
                   document.head.appendChild(m);
-                  window.dispatchEvent(new Event('resize'));
+                  // Optional: Disable scrolling to lock layout
+                  document.body.style.overscrollBehavior = 'none';
+                  document.documentElement.style.overscrollBehavior = 'none';
                   
                   // Clean up old CSS zoom if any from previous versions
                   var oldStyle = document.getElementById('golden-zoom-style');
@@ -709,8 +743,9 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<SequenceAnalyzerViewModel>(
-      builder: (context, viewModel, child) {
+    return ListenableBuilder(
+      listenable: _viewModel,
+      builder: (context, child) {
         return Scaffold(
           backgroundColor: ChromeColors.tabBarBg,
           body: SafeArea(
@@ -724,14 +759,14 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                       child: Consumer<OverlayButtonsViewModel>(
                         builder: (context, overlayViewModel, _) {
                           return AbsorbPointer(
-                            absorbing: overlayViewModel.shouldAbsorbMainContent,
+                            absorbing: overlayViewModel.shouldAbsorbMainContentForMode(widget.gameMode),
                             child: Column(
                               children: [
-                                _buildCompactPredictor(viewModel),
+                                _buildCompactPredictor(_viewModel),
                                 _buildTabBar(),
                                 _buildChromeAddressBar(),
-                                _buildBalanceDisplay(viewModel),
-                                Expanded(child: _buildWebView(viewModel)),
+                                _buildBalanceDisplay(_viewModel),
+                                Expanded(child: _buildWebView(_viewModel)),
                               ],
                             ),
                           );
@@ -756,6 +791,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
 
                     return OverlayButtonsPanel(
                       screenSize: MediaQuery.of(context).size,
+                      gameMode: widget.gameMode,
                     );
                   },
                 ),
@@ -776,45 +812,48 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
       currentButtonColors[viewModel.lastPredictedChar!] = const Color(0xFF3B82F6);
     }
 
+    // Compact UI Tweak: Reduced height and font size for wider game view
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
       color: ChromeColors.tabBarBg,
       child: Column(
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: viewModel.buttonValues.map((item) {
-              bool isSelected = currentButtonColors[item] != Colors.white;
               return Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                  child: ElevatedButton(
-                    onPressed: viewModel.isCalculating
-                        ? null
-                        : () {
-                            viewModel.recordInput(item);
-                          },
-                    style: ButtonStyle(
-                      backgroundColor: WidgetStateProperty.all<Color>(
-                        currentButtonColors[item]!,
-                      ),
-                      foregroundColor: WidgetStateProperty.all<Color>(
-                        Colors.white,
-                      ),
-                      padding: WidgetStateProperty.all<EdgeInsetsGeometry>(
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
-                      ),
-                      shape: WidgetStateProperty.all<OutlinedBorder>(
-                        RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8.0),
+                  padding: const EdgeInsets.symmetric(horizontal: 3.0, vertical: 2.0),
+                  child: SizedBox(
+                    height: 28,
+                    child: ElevatedButton(
+                      onPressed: viewModel.isCalculating
+                          ? null
+                          : () {
+                              viewModel.recordInput(item);
+                            },
+                      style: ButtonStyle(
+                        backgroundColor: WidgetStateProperty.all<Color>(
+                          currentButtonColors[item]!,
+                        ),
+                        foregroundColor: WidgetStateProperty.all<Color>(
+                          Colors.white,
+                        ),
+                        padding: WidgetStateProperty.all<EdgeInsetsGeometry>(
+                          const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                        ),
+                        shape: WidgetStateProperty.all<OutlinedBorder>(
+                          RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(4.0),
+                          ),
                         ),
                       ),
-                    ),
-                    child: Text(
-                      item,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                      child: Text(
+                        item,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
@@ -822,7 +861,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
               );
             }).toList(),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
           _buildHistoryText(viewModel.inputs),
         ],
       ),
@@ -860,14 +899,14 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
 
   /// Builds the balance and prediction count display
   Widget _buildBalanceDisplay(SequenceAnalyzerViewModel viewModel) {
-    final profitColor = viewModel.profitPercentage >= 0
-        ? Colors.green
-        : Colors.red;
+    final mode = widget.gameMode;
+    final profit = viewModel.getProfitForMode(mode);
+    final profitColor = profit >= 0 ? Colors.green : Colors.red;
 
-    // Determine balance text color based on status
+    // Isolated balance per GameMode
     Color balanceColor = ChromeColors.textPrimary;
-    String balanceText = viewModel.currentBalance ?? 'Loading...';
-    String coinType = viewModel.detectedCoinType ?? '';
+    String balanceText = viewModel.getBalanceForMode(mode) ?? 'Loading...';
+    String coinType = viewModel.getCoinTypeForMode(mode) ?? (mode == GameMode.mines ? 'POL' : 'DOGE');
 
     if (balanceText == "Checking...") {
       balanceColor = Colors.amber[300]!;
@@ -886,11 +925,6 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
       balanceText =
           "$balanceText (LOCKED $minutes:${seconds.toString().padLeft(2, '0')})";
     }
-
-    // Create balance display with coin type
-    String fullBalanceDisplay = coinType.isNotEmpty
-        ? "$coinType $balanceText"
-        : balanceText;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
@@ -923,7 +957,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
               ),
               const SizedBox(width: 8),
               Text(
-                "Balance: $fullBalanceDisplay",
+                "Balance $coinType: $balanceText",
                 style: TextStyle(
                   color: balanceColor,
                   fontSize: 13,
@@ -953,9 +987,9 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
             ],
           ),
           Text(
-            "Profit: ${viewModel.profitPercentage.toStringAsFixed(3)}%",
+            "Profit: ${profit.toStringAsFixed(3)}%",
             style: TextStyle(
-              color: viewModel.profitPercentage <= -0.31
+              color: profit <= -0.31
                   ? Colors.red[600]!
                   : profitColor,
               fontSize: 13,

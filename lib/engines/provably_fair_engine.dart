@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 
 /// V103: Smart Prediction Engine with Bomb History Evasion
 /// 
@@ -25,21 +26,24 @@ class ProvablyFairEngine {
   // V103: Bomb History Tracking
   final List<String> _bombHistory = []; // Last N bomb positions (A, B, C)
   final List<String> _lossHistory = []; // Last N positions we lost on
-  static const int _maxBombHistory = 12;
-  static const int _maxLossHistory = 5;
+  
+  // V124: Dynamic Parameters
+  int maxBombHistory = 12;
+  int maxLossHistory = 3;
+  double hmacThreshold = 0.15;
 
   /// Record where the bomb actually was after a round
   void recordBomb(String bombPosition) {
     if (bombPosition != 'A' && bombPosition != 'B' && bombPosition != 'C') return;
     _bombHistory.add(bombPosition);
-    if (_bombHistory.length > _maxBombHistory) _bombHistory.removeAt(0);
+    if (_bombHistory.length > maxBombHistory) _bombHistory.removeAt(0);
   }
 
   /// Record our losing pick (what we chose when we lost)
   void recordLoss(String lostPosition) {
     if (lostPosition != 'A' && lostPosition != 'B' && lostPosition != 'C') return;
     _lossHistory.add(lostPosition);
-    if (_lossHistory.length > _maxLossHistory) _lossHistory.removeAt(0);
+    if (_lossHistory.length > maxLossHistory) _lossHistory.removeAt(0);
   }
 
   /// Clear loss history on win (streak broken)
@@ -83,25 +87,47 @@ class ProvablyFairEngine {
       }
     }
     
-    // Step 2: Anti-consecutive-loss filter
-    // Remove columns we just lost on from candidates
+    // Step 2: HARD RULE — Never pick the column with highest bomb frequency
+    // This is the #1 most important rule: if A has been the bomb 100% of the time, NEVER pick A.
     List<String> safeCandidates = List.from(candidates);
     
-    if (_lossHistory.isNotEmpty) {
-      // Always avoid the most recent loss position
-      String lastLoss = _lossHistory.last;
-      safeCandidates.remove(lastLoss);
-      
-      // If 2+ consecutive losses, also avoid second-to-last
-      if (_lossHistory.length >= 2) {
-        String secondLastLoss = _lossHistory[_lossHistory.length - 2];
-        safeCandidates.remove(secondLastLoss);
+    if (_bombHistory.length >= 3) {
+      // Find the most dangerous column
+      String mostDangerous = candidates.first;
+      double highestDanger = -1.0;
+      for (var c in candidates) {
+        if (dangerScore[c]! > highestDanger) {
+          highestDanger = dangerScore[c]!;
+          mostDangerous = c;
+        }
+      }
+      // If a column is significantly more dangerous than the others, blacklist it
+      double secondHighest = dangerScore.values.where((v) => v < highestDanger).fold(0.0, max);
+      if (highestDanger - secondHighest > 0.15) {
+        safeCandidates.remove(mostDangerous);
       }
     }
-    
-    // Safety: If all candidates were filtered, restore all
-    if (safeCandidates.isEmpty) {
-      safeCandidates = List.from(candidates);
+
+    // 🛡️ Step 2.5: 4-Pillar Streak Suppression Engine (กดการแพ้ติดกันไม่ให้เกิน 3-4 ตา)
+    // Pillar A: Tri-State Anti-Clustering Rotation (ถ้าแพ้ 2 ตาติดบน 2 เสาที่ต่างกัน ให้บังคับเลือกเสาที่ 3 ทันที)
+    if (_lossHistory.length >= 2) {
+      final recentLosses = _lossHistory.sublist(_lossHistory.length - 2).toSet();
+      if (recentLosses.length >= 2) {
+        final remaining3rd = candidates.where((c) => !recentLosses.contains(c)).toList();
+        if (remaining3rd.isNotEmpty) {
+          safeCandidates = remaining3rd;
+          debugPrint('[PROVABLY FAIR] 🛡️ Tri-State Rotation: Eliminating lost columns $recentLosses -> Forced to $safeCandidates');
+        }
+      }
+    }
+
+    // Pillar B: Hard Anti-Consecutive Loss Filter (ห้ามแทงเสาที่เพิ่งแพ้ในตาล่าสุดซ้ำ 100%)
+    if (_lossHistory.isNotEmpty && safeCandidates.length > 1) {
+      String lastLostColumn = _lossHistory.last;
+      if (safeCandidates.contains(lastLostColumn)) {
+        safeCandidates.remove(lastLostColumn);
+        debugPrint('[PROVABLY FAIR] 🚫 Hard Loss Filter: Blacklisted $lastLostColumn. Remaining candidates: $safeCandidates');
+      }
     }
     
     // Step 3: Among safe candidates, pick the one with lowest danger score
@@ -111,7 +137,7 @@ class ProvablyFairEngine {
     String bestPick;
     
     if (safeCandidates.length >= 2 && 
-        (dangerScore[safeCandidates[0]]! - dangerScore[safeCandidates[1]]!).abs() < 0.15) {
+        (dangerScore[safeCandidates[0]]! - dangerScore[safeCandidates[1]]!).abs() < hmacThreshold) {
       // Scores are close — use HMAC to break the tie unpredictably
       bestPick = _hmacTiebreaker(safeCandidates);
     } else {

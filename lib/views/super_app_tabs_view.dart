@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:ui';
+import 'package:provider/provider.dart';
+import 'package:golden_p/models/game_mode.dart';
+import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/views/tabs/wallet_tab_view.dart';
-import 'package:golden_p/views/tabs/ai_bot_tab_view.dart';
 import 'package:golden_p/views/tabs/analytics_tab_view.dart';
+import 'package:golden_p/views/sequence_analyzer_view.dart';
 
 class SuperAppTabsView extends StatefulWidget {
   const SuperAppTabsView({super.key});
@@ -12,16 +15,22 @@ class SuperAppTabsView extends StatefulWidget {
 }
 
 class _SuperAppTabsViewState extends State<SuperAppTabsView> {
-  int _currentTabIndex = 0;
+  int _currentTabIndex = 1; // Default to Towers tab
 
-  final List<Widget> _tabs = [
-    const WalletTabView(),
-    const AIBotTabView(),
-    const AnalyticsTabView(),
+  final List<Widget> _tabs = const [
+    WalletTabView(),
+    SequenceAnalyzerView(gameMode: GameMode.towers),
+    SequenceAnalyzerView(gameMode: GameMode.mines),
+    AnalyticsTabView(),
   ];
 
   @override
   Widget build(BuildContext context) {
+    final overlayVM = Provider.of<OverlayButtonsViewModel>(
+      context,
+      listen: false,
+    );
+
     return Scaffold(
       body: IndexedStack(
         index: _currentTabIndex,
@@ -46,6 +55,11 @@ class _SuperAppTabsViewState extends State<SuperAppTabsView> {
                 setState(() {
                   _currentTabIndex = index;
                 });
+                if (index == 1) {
+                  overlayVM.setActiveGameMode(GameMode.towers);
+                } else if (index == 2) {
+                  overlayVM.setActiveGameMode(GameMode.mines);
+                }
               },
               backgroundColor: Colors.transparent,
               elevation: 0,
@@ -67,9 +81,14 @@ class _SuperAppTabsViewState extends State<SuperAppTabsView> {
                   label: 'Wallet',
                 ),
                 BottomNavigationBarItem(
-                  icon: Icon(Icons.smart_toy_outlined),
-                  activeIcon: Icon(Icons.smart_toy_rounded),
-                  label: 'AI Bot',
+                  icon: Icon(Icons.layers_outlined),
+                  activeIcon: Icon(Icons.layers_rounded),
+                  label: 'Towers',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.diamond_outlined),
+                  activeIcon: Icon(Icons.diamond_rounded),
+                  label: 'Mine',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.analytics_outlined),

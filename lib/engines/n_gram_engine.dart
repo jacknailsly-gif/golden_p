@@ -1,4 +1,7 @@
 import 'dart:math';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 /// 🧠 Smart N-Gram Prediction Engine
 /// Learns patterns (A-B-C, A-A-B, etc.) and predicts future outcomes based on historical frequency.
@@ -8,7 +11,38 @@ class NGramEngine {
 
   // Storage: Context -> {NextChar: Count}
   // Example: "AB" -> {'C': 5, 'A': 1}
-  final Map<String, Map<String, int>> _memory = {};
+  Map<String, Map<String, int>> _memory = {};
+  
+  static const String _prefsKey = 'ngram_engine_memory';
+
+  /// Load persistent memory from local storage (Cross-session knowledge)
+  Future<void> loadFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final String? jsonStr = prefs.getString(_prefsKey);
+      if (jsonStr != null) {
+        final Map<String, dynamic> decoded = jsonDecode(jsonStr);
+        _memory = decoded.map((key, value) {
+          return MapEntry(key, Map<String, int>.from(value as Map));
+        });
+        debugPrint('🧠 [NGramEngine] Loaded persistent memory: ${_memory.length} patterns.');
+      }
+    } catch (e) {
+      debugPrint('⚠️ [NGramEngine] Failed to load memory: $e');
+    }
+  }
+
+  /// Save current memory to local storage
+  Future<void> saveToPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final String jsonStr = jsonEncode(_memory);
+      await prefs.setString(_prefsKey, jsonStr);
+      debugPrint('💾 [NGramEngine] Saved memory to disk.');
+    } catch (e) {
+      debugPrint('⚠️ [NGramEngine] Failed to save memory: $e');
+    }
+  }
 
   /// Learn from the latest history update
   void learn(List<String> history) {

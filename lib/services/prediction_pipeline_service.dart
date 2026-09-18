@@ -28,6 +28,15 @@ class PredictionPipelineService {
   };
   int _lastProcessedRoundCount = 0;
 
+  // V124: Dynamic Parameters
+  double memoryDecayRate = 0.90;
+  double predictionPenalty = -1.0;
+  double predictionReward = 1.0;
+  double voteNoiseMax = 0.05;
+  int v70InversionStreak = 3;
+  int deepHistoryWindow = 12;
+  double voteWeightFloor = 0.1;
+
   // --- V70.0: Ensemble & Inversion State ---
   // No longer using strict ban lists to allow weighted votes.
 
@@ -81,14 +90,14 @@ class PredictionPipelineService {
         double currentScore = _engineScores[engineName] ?? 0.0;
         
         // V70.0: High Reactivity Memory Decay (Reduce old score by 50% to adapt instantly)
-        currentScore *= 0.50;
+        currentScore *= memoryDecayRate;
         
         if (predictedSafeBox == lastActualBomb) {
           // Engine predicted a bomb! (Loss)
-          currentScore -= 1.0;
+          currentScore += predictionPenalty;
         } else {
           // Engine predicted a safe box. (Win)
-          currentScore += 1.0;
+          currentScore += predictionReward;
         }
         _engineScores[engineName] = currentScore;
       });
@@ -114,7 +123,7 @@ class PredictionPipelineService {
     // Engine B: Markov Dodger (Avoid the most frequent bomb in the last 5 rounds)
     if (recentBombs.isNotEmpty) {
       Map<String, int> recentCounts = {'A': 0, 'B': 0, 'C': 0};
-      int scanLength = min(5, recentBombs.length);
+      int scanLength = min(deepHistoryWindow, recentBombs.length);
       for (int i = recentBombs.length - scanLength; i < recentBombs.length; i++) {
         recentCounts[recentBombs[i]] = (recentCounts[recentBombs[i]] ?? 0) + 1;
       }
@@ -203,7 +212,7 @@ class PredictionPipelineService {
     Map<String, double> normalizedWeights = {};
     _engineScores.forEach((engine, score) {
        // Shift scores so the lowest is at least 0.1 to give everyone a tiny vote
-       normalizedWeights[engine] = (score - minScore) + 0.1; 
+       normalizedWeights[engine] = (score - minScore) + voteWeightFloor; 
     });
 
     // Cast votes
@@ -213,12 +222,18 @@ class PredictionPipelineService {
        voteScores[predictedBox] = (voteScores[predictedBox] ?? 0.0) + weight;
     });
 
+    // Integrate Machine Learning Pattern Consensus + Titanium Crypto RNG into the vote
+    consensusScores.forEach((box, cScore) {
+       if (cScore > 0.0) {
+         voteScores[box] = (voteScores[box] ?? 0.0) + (cScore * 0.15);
+       }
+    });
+
     // R1: Non-deterministic voting noise (±0.05 to 0.15 to each entry in voteScores)
     final Random random = Random();
     voteScores.forEach((key, val) {
-      final double magnitude = 0.05 + random.nextDouble() * 0.10; // 0.05 to 0.15
-      final double sign = random.nextBool() ? 1.0 : -1.0;
-      voteScores[key] = val + (magnitude * sign);
+      final double noise = (random.nextDouble() * voteNoiseMax) - (voteNoiseMax / 2);
+      voteScores[key] = val + noise;
     });
 
     // Find the winner from votes
@@ -252,12 +267,26 @@ class PredictionPipelineService {
     // ═══════════════════════════════════════════════════════
     // If the casino wins 2 or more times in a row, they have likely tracked our Ensemble's preference.
     // So we do the exact opposite of what the Ensemble thinks is best.
-    if (context.incorrectStreak == 2) {
-       List<String> alternatives = ['A', 'B', 'C'].where((box) => box != bestPick).toList();
-       alternatives.shuffle();
-       predictionPick = alternatives.first; // Pick randomly from the other two
+    if (context.incorrectStreak >= 2) {
+       String? lastBomb = recentBombs.isNotEmpty ? recentBombs.last : null;
+       List<String> alternatives = ['A', 'B', 'C']
+           .where((box) => box != bestPick && (lastBomb == null || box != lastBomb))
+           .toList();
+       if (alternatives.isEmpty) {
+         alternatives = ['A', 'B', 'C'].where((box) => box != bestPick).toList();
+       }
+       // 🎯 Deterministic Anti-Bomb Selection (คำสั่งผู้ใช้: อัปเกรดเพื่อป้องกันการแพ้ > 3 ตาติด):
+       // ไม่สุ่ม shuffle! จัดเรียงตามความถี่ระเบิดย้อนหลัง และเลือกช่องที่ระเบิดออกน้อยที่สุด
+       if (alternatives.length > 1 && recentBombs.isNotEmpty) {
+         final Map<String, int> altCounts = {};
+         for (final b in recentBombs) {
+           altCounts[b] = (altCounts[b] ?? 0) + 1;
+         }
+         alternatives.sort((a, b) => (altCounts[a] ?? 0).compareTo(altCounts[b] ?? 0));
+       }
+       predictionPick = alternatives.first;
        decisionSource = 'V70 Inversion (Was $bestPick, Now $predictionPick)';
-       debugPrint('🛡️ [V70.0 INVERSION] Casino counter detected! Inverting pick from $bestPick to $predictionPick');
+       debugPrint('🛡️ [V70.0 INVERSION] Casino counter detected! Deterministically selected $predictionPick (Streak: ${context.incorrectStreak})');
     }
 
     // Formatting the scores map for easier reading in logs

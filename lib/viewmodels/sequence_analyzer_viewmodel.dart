@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../services/websocket_service.dart';
+import '../models/game_mode.dart';
 
 import '../models/history_entry.dart';
 import '../engines/advanced_rules_engine.dart';
@@ -30,6 +31,8 @@ import '../models/prediction_result.dart';
 import '../services/prediction_pipeline_service.dart';
 
 class SequenceAnalyzerViewModel extends ChangeNotifier {
+  final GameMode gameMode;
+
   // --- WebView Controller ---
   InAppWebViewController? _webViewController;
   SharedPreferences? _prefs;
@@ -59,9 +62,34 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   final Map<String, Map<String, int>> _triggerContextMemory =
       {}; // Context: HistoryPattern -> {TriggerId: NetWinScore}
 
+  // Smart Balance Tracking (Isolated per GameMode)
+  final Map<GameMode, InAppWebViewController> _controllersByMode = {};
+  final Map<GameMode, String?> _currentBalanceByMode = {
+    GameMode.towers: null,
+    GameMode.mines: null,
+  };
+  final Map<GameMode, String?> _detectedCoinTypeByMode = {
+    GameMode.towers: 'DOGE',
+    GameMode.mines: 'POL',
+  };
+  final Map<GameMode, String?> _initialBalanceByMode = {
+    GameMode.towers: null,
+    GameMode.mines: null,
+  };
+  final Map<GameMode, double> _profitPercentageByMode = {
+    GameMode.towers: 0.0,
+    GameMode.mines: 0.0,
+  };
+  // 🪙 Multi-Coin Isolated Profit Tracking per (GameMode, CoinType)
+  final Map<String, String> _initialBalanceByModeAndCoin = {};
+  final Map<String, double> _profitPercentageByModeAndCoin = {};
+
   bool _isCalculating = false; // For locking UI during computation
   String? _currentBalance; // For Smart Balance Tracking
   int _predictionCount = 0; // Counts predictions made
+  int _maxLossStreak = 0; // Tracks the maximum consecutive losses
+  String _maxLossSequence = ''; // Tracks the sequence of actions that resulted in max losses
+  String _currentLossSequence = ''; // Tracks the ongoing sequence of losing actions
   String? _initialBalance;
   double _profitPercentage = 0.0;
   bool _isUpdatingBalance = false; // Guard for concurrent updateBalance calls
@@ -130,7 +158,10 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       []; // Tracks what won while we lost
   final List<bool> _recentResults =
       []; // Fixed-size window for Anti-Resistance (last 10)
+  final List<bool> _recent20Results =
+      []; // Fixed-size window for Dynamic Scalping (last 20)
   double _antiResistanceAccuracy = 0.5;
+  double get live50RoundWinRate => _recent20Results.isEmpty ? 0.5 : _recent20Results.where((r) => r).length / _recent20Results.length;
 
   // --- Trackers ---
   int _correctStreak = 0;
@@ -145,9 +176,9 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   Timer? _lockTimer;
   Timer? _balanceTimer; // Live balance auto-polling timer
   Timer? _learningSaveDebounceTimer;
-  // Persistent lock state keys
-  static const String _lockStateKey = 'webview_lock_state';
-  static const String _lockStartTimeKey = 'webview_lock_start_time';
+  // Persistent lock state keys (Isolated per GameMode)
+  String get _lockStateKey => 'webview_lock_state_${gameMode.storagePrefix}';
+  String get _lockStartTimeKey => 'webview_lock_start_time_${gameMode.storagePrefix}';
 
   // --- Coin Type Tracking ---
   String? _detectedCoinType; // All FaucetPay coins: BTC, ETH, DOGE, LTC, BCH, DASH, DGB, TRX, USDT, FEY, ZEC, BNB, SOL, XRP, POL, ADA, TON, XLM, USDC, XMR, TARA
@@ -182,14 +213,32 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   // Getter for UI
   String get serverUrl => _serverUrl;
 
+  // 🚨 Server Health & Kill Switch State (V130 Safety System)
+  bool _isServerHealthy = true;
+  bool get isServerHealthy => _isServerHealthy;
+  int _consecutiveServerFailures = 0;
+  int get consecutiveServerFailures => _consecutiveServerFailures;
+  bool _hasCriticalServerError = false;
+  bool get hasCriticalServerError => _hasCriticalServerError;
+  String? _lastServerErrorReason;
+  String? get lastServerErrorReason => _lastServerErrorReason;
+
+  void resetServerErrorState() {
+    _isServerHealthy = true;
+    _consecutiveServerFailures = 0;
+    _hasCriticalServerError = false;
+    _lastServerErrorReason = null;
+    notifyListeners();
+  }
+
   // Active Learning Layer (On-Device Training)
   // Context -> {NextChar: Count}
   final Map<String, Map<String, int>> _learningMemory = {};
 
   // Trackers (Redundant moved up)
 
-  // 🔄 Copy User / AI Model Switching
-  String _predictionMode = 'copy_user'; // 'copy_user' or 'ai_model'
+  // 🔄 Pure AI Model Mode (Enforced by User Directive)
+  String _predictionMode = 'ai_model'; // Pure AI model prediction
   String get predictionMode => _predictionMode;
 
   // 💣 Bomb Follower Mode
@@ -229,6 +278,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   String? _lastTsReasoning; // Tracks the reasoning from TimeSeriesEngine v1.0
 
   final PredictionPipelineService _predictionPipeline = PredictionPipelineService();
+  PredictionPipelineService get predictionPipeline => _predictionPipeline;
 
   // --- 🧠 Adaptive Decision Intelligence System (ADIS) v2.0 ---
   // ignore: unused_field
@@ -267,6 +317,9 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   /// V18: Check if Shadow Hunter detected a hunt
   bool get isHuntDetected => _shadowHunter.huntCertainty > 0.8;
   bool get isEmergencyResetRequired => _shadowHunter.isEmergencyResetRequired();
+
+  /// V111: Expose consecutive correct streak for recovery timing
+  int get correctStreak => _correctStreak;
 
   /// V19: Clean Brain - Return the AI's calculated prediction directly.
   /// No more forced-A loop. The decision logic in _generateHybridResponse handles everything.
@@ -320,12 +373,43 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       : (_correctPredictions * 100 / _totalPredictions).toStringAsFixed(1);
   List<String> get futureForecast => _futureForecast;
   String? get currentBalance => _currentBalance;
+  String? getBalanceForMode(GameMode mode) => _currentBalanceByMode[mode] ?? _currentBalance;
+  String? getCoinTypeForMode(GameMode mode) => _detectedCoinTypeByMode[mode] ?? (mode == GameMode.mines ? 'POL' : 'DOGE');
+  double getProfitForMode(GameMode mode, {String? coinType}) {
+    final coin = (coinType ?? _detectedCoinTypeByMode[mode] ?? (mode == GameMode.mines ? 'POL' : 'DOGE')).toUpperCase().trim();
+    final key = '${mode.name}_$coin';
+    return _profitPercentageByModeAndCoin[key] ?? 0.0;
+  }
+  String? getInitialBalanceForMode(GameMode mode, {String? coinType}) {
+    final coin = (coinType ?? _detectedCoinTypeByMode[mode] ?? (mode == GameMode.mines ? 'POL' : 'DOGE')).toUpperCase().trim();
+    final key = '${mode.name}_$coin';
+    return _initialBalanceByModeAndCoin[key];
+  }
   int get predictionCount => _predictionCount;
-  double get profitPercentage => _profitPercentage;
+  double get profitPercentage {
+    final coin = _detectedCoinTypeByMode[gameMode] ?? _detectedCoinType;
+    if (coin != null) {
+      final key = '${gameMode.name}_${coin.toUpperCase().trim()}';
+      if (_profitPercentageByModeAndCoin.containsKey(key)) {
+        return _profitPercentageByModeAndCoin[key]!;
+      }
+    }
+    return _profitPercentage;
+  }
 
   // --- Analytics Getters ---
   int get totalPredictions => _totalPredictions;
   int get correctPredictions => _correctPredictions;
+  int get maxLossStreak => _maxLossStreak;
+  String get maxLossSequence => _maxLossSequence;
+  
+  void resetMaxLossStreak() {
+    _maxLossStreak = 0;
+    _maxLossSequence = '';
+    _currentLossSequence = '';
+    notifyListeners();
+    debugPrint('[SESSION] 🔄 Max Loss Streak reset to 0 (new session)');
+  }
   
   double get profitLossValue {
     if (_detectedCoinType == null) return 0.0;
@@ -342,11 +426,43 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
 
   /// Reset profit tracking — call this when bot starts
   /// so profit% is calculated from CURRENT balance, not app startup balance.
-  void resetProfitTracking() {
-    _initialBalances.clear();
-    _initialBalance = null;
-    _profitPercentage = 0.0;
-    debugPrint('[PROFIT TRACKER] 🔄 Reset! Next balance read will be the new baseline.');
+  void resetProfitTracking({GameMode? mode, String? coinType}) {
+    if (mode != null) {
+      if (coinType != null) {
+        final normCoin = coinType.toUpperCase().trim();
+        final key = '${mode.name}_$normCoin';
+        _initialBalanceByModeAndCoin.remove(key);
+        _profitPercentageByModeAndCoin.remove(key);
+        _initialBalances.remove(normCoin);
+        if ((_detectedCoinTypeByMode[mode]?.toUpperCase().trim()) == normCoin) {
+          _initialBalanceByMode[mode] = null;
+          _profitPercentageByMode[mode] = 0.0;
+        }
+      } else {
+        _initialBalanceByMode[mode] = null;
+        _profitPercentageByMode[mode] = 0.0;
+        final currentCoin = _detectedCoinTypeByMode[mode]?.toUpperCase().trim();
+        if (currentCoin != null) {
+          final key = '${mode.name}_$currentCoin';
+          _initialBalanceByModeAndCoin.remove(key);
+          _profitPercentageByModeAndCoin.remove(key);
+          _initialBalances.remove(currentCoin);
+        }
+      }
+      debugPrint('[PROFIT TRACKER] 🔄 Reset profit tracking for [${mode.displayName}] coin: ${coinType ?? _detectedCoinTypeByMode[mode] ?? "all"}.');
+    } else {
+      _initialBalanceByModeAndCoin.clear();
+      _profitPercentageByModeAndCoin.clear();
+      _initialBalances.clear();
+      _initialBalance = null;
+      _profitPercentage = 0.0;
+      _initialBalanceByMode[GameMode.towers] = null;
+      _initialBalanceByMode[GameMode.mines] = null;
+      _profitPercentageByMode[GameMode.towers] = 0.0;
+      _profitPercentageByMode[GameMode.mines] = 0.0;
+      debugPrint('[PROFIT TRACKER] 🔄 Global Reset! Next balance read will be the new baseline.');
+    }
+    notifyListeners();
   }
 
   /// V39.0: Brain Clean Engine
@@ -539,8 +655,51 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   // Legacy V7/V11 predictions removed
 
   /// Sets the webview controller from the view
-  void setWebViewController(InAppWebViewController controller) {
+  void setWebViewController(InAppWebViewController controller, {GameMode? mode}) {
     _webViewController = controller;
+    final targetMode = mode ?? gameMode;
+    _controllersByMode[targetMode] = controller;
+    
+    // [API Interceptor] Register JS Handler for instant balance updates
+    try {
+      controller.addJavaScriptHandler(
+        handlerName: 'onNetworkActivity', 
+        callback: (args) {
+          // Trigger fast balance update immediately after casino network responds
+          updateBalanceFast();
+        }
+      );
+
+      final jsHook = '''
+        (function() {
+            if (window._apiHooked) return;
+            window._apiHooked = true;
+            
+            const originalFetch = window.fetch;
+            window.fetch = async function() {
+                const response = await originalFetch.apply(this, arguments);
+                if (window.flutter_inappwebview) {
+                   window.flutter_inappwebview.callHandler('onNetworkActivity');
+                }
+                return response;
+            };
+
+            const originalOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function() {
+                this.addEventListener('load', function() {
+                    if (window.flutter_inappwebview) {
+                       window.flutter_inappwebview.callHandler('onNetworkActivity');
+                    }
+                });
+                originalOpen.apply(this, arguments);
+            };
+        })();
+      ''';
+      controller.evaluateJavascript(source: jsHook);
+    } catch (e) {
+      debugPrint('⚠️ [API Hook] Failed to inject network observer: $e');
+    }
+
     startLiveBalanceUpdates();
   }
 
@@ -567,11 +726,11 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   /// Enhanced with multiple patterns and robust error handling.
   Future<void> updateBalance() async {
     if (_isDisposed || _webViewController == null) return;
-    if (_isUpdatingBalance) return; // Prevent concurrent calls from 10ms timer
+    if (_isUpdatingBalance) return;
     _isUpdatingBalance = true;
 
     try {
-      await _doUpdateBalance();
+      await _doUpdateBalanceForMode(gameMode, _webViewController!);
     } finally {
       _isUpdatingBalance = false;
     }
@@ -591,16 +750,51 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     }
   }
 
-  Future<void> _doUpdateBalance() async {
-    if (_isDisposed || _webViewController == null) return;
-
-    // Enhanced JS function with focus on multiple cryptocurrency patterns
-    const String jsCode = r"""
+  String _getBalanceJs(GameMode mode) {
+    return (mode == GameMode.mines) ? r'''
       (function() {
         try {
+          // ─── ROBUST 4-8 DECIMAL & HEADER SCANNER FOR MINE (POLPICK) ───
+          var directEl = document.querySelector('#balance, .balance, [data-balance], #user_balance, .user_balance, .user-balance, #user-balance');
+          if (directEl) {
+            var txt = (directEl.innerText || directEl.textContent || directEl.value || '').trim();
+            var match = txt.match(/([0-9,]+\.[0-9]{4,8})/);
+            if (match) {
+              var coinMatch = txt.match(/(POL|MATIC|DOGE|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
+              var coin = coinMatch ? coinMatch[1].toUpperCase() : 'POL';
+              return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
+            }
+          }
+          let topElements = Array.from(document.querySelectorAll('*')).filter(el => {
+            let txt = (el.innerText || el.textContent || '').trim();
+            if (!txt || txt.length > 60) return false;
+            return /[0-9,]+\.[0-9]{4,8}/.test(txt);
+          });
+          topElements.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          for (let el of topElements) {
+            let rect = el.getBoundingClientRect();
+            if (rect.height > 0 && rect.top >= 0 && rect.top < 250) {
+              let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{4,8})/);
+              if (match) {
+                let coinMatch = (el.innerText || el.textContent || '').match(/(POL|MATIC|DOGE|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
+                let coin = coinMatch ? coinMatch[1].toUpperCase() : 'POL';
+                return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
+              }
+            }
+          }
+          for (let el of topElements) {
+            let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{4,8})/);
+            if (match) return JSON.stringify({coin: 'POL', balance: match[1].replace(/,/g, '')});
+          }
+          return null;
+        } catch(e) { return null; }
+      })();
+    ''' : r'''
+      (function() {
+        try {
+          // ─── EXACT ORIGINAL FAUCETPAY PARSER FOR TOWERS (เหมือนเดิม 100%) ───
           const text = document.body.innerText || "";
           
-          // All FaucetPay supported coins
           const coins = [
             {regex: /Bitcoin\s*\(BTC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BTC'},
             {regex: /Ethereum\s*\(ETH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ETH'},
@@ -629,7 +823,6 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
             {regex: /Taraxa\s*\(TARA\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TARA'}
           ];
           
-          // Try text-based matching first
           for (const pattern of coins) {
             const match = text.match(pattern.regex);
             if (match && match[1]) {
@@ -639,8 +832,15 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
               }
             }
           }
+
+          const newFormatMatch = text.match(/Balance[\s:]*([0-9,]+\.?[0-9]*)\s*([A-Z]{3,5})/i);
+          if (newFormatMatch && newFormatMatch[1] && newFormatMatch[2]) {
+            const balance = parseFloat(newFormatMatch[1].replace(/,/g, ''));
+            if (!isNaN(balance) && balance > 0 && balance < 100000000) {
+              return JSON.stringify({coin: newFormatMatch[2].toUpperCase(), balance: newFormatMatch[1]});
+            }
+          }
           
-          // Fallback: Search in HTML with flexible spacing
           const html = document.body.innerHTML || "";
           for (const pattern of coins) {
             const flexRegex = new RegExp(pattern.regex.source.replace('\\s*', '[^0-9]*'), 'i');
@@ -655,13 +855,77 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
           
           return null;
         } catch (e) {
-          console.error('Balance extraction error:', e);
           return null;
         }
       })();
-    """;
+    ''';
+  }
 
-    // Enhanced retry logic with progressive delays
+  void _applyParsedBalanceResult(
+    GameMode mode,
+    Map<String, dynamic> parsedResult, {
+    int? attempt,
+    bool notify = true,
+  }) {
+    final String coinType = (parsedResult['coin'] ?? 'UNKNOWN').toString().toUpperCase().trim();
+    final String balanceValue = parsedResult['balance']?.toString() ?? '';
+    final balance = double.tryParse(balanceValue.replaceAll(',', '').trim());
+
+    if (balance != null && balance >= 0) {
+      final String modeCoinKey = '${mode.name}_$coinType';
+      _detectedCoinTypeByMode[mode] = coinType;
+      _currentBalanceByMode[mode] = balanceValue;
+      _detectedCoinType = coinType;
+      _currentBalance = balanceValue;
+
+      // Mode & Coin isolated initial balance tracking
+      _initialBalanceByModeAndCoin.putIfAbsent(modeCoinKey, () => balanceValue);
+      _initialBalances.putIfAbsent(coinType, () => balanceValue);
+      _initialBalanceByMode[mode] = _initialBalanceByModeAndCoin[modeCoinKey];
+      _initialBalance ??= balanceValue;
+
+      final String initStr = _initialBalanceByModeAndCoin[modeCoinKey] ?? balanceValue;
+      final double? initVal = double.tryParse(initStr.replaceAll(',', '').trim());
+      if (initVal != null && initVal > 0) {
+        final double coinProfit = ((balance - initVal) / initVal) * 100;
+        _profitPercentageByModeAndCoin[modeCoinKey] = coinProfit;
+        _profitPercentageByMode[mode] = coinProfit;
+        _profitPercentage = coinProfit;
+        _checkBalanceWarning();
+      }
+
+      if (!_highestBalances.containsKey(coinType)) {
+        _highestBalances[coinType] = balanceValue;
+      } else {
+        final currentHighest = double.tryParse(_highestBalances[coinType]!.replaceAll(',', '')) ?? 0;
+        if (balance > currentHighest) {
+          _highestBalances[coinType] = balanceValue;
+        }
+      }
+
+      _overallHighestBalance = _highestBalances[coinType] ?? balanceValue;
+      _overallHighestCoin = coinType;
+
+      final attemptStr = attempt != null ? ' (Attempt $attempt)' : '';
+      debugPrint(
+        "[BalanceTracker ${mode.displayName}] Success: $coinType $balanceValue$attemptStr | Highest: $_overallHighestBalance | Profit: ${(_profitPercentageByModeAndCoin[modeCoinKey] ?? 0.0).toStringAsFixed(3)}%",
+      );
+      if (notify) {
+        notifyListeners();
+      }
+    }
+  }
+
+  @visibleForTesting
+  void applyParsedBalanceResultForTesting(GameMode mode, Map<String, dynamic> parsedResult) {
+    _applyParsedBalanceResult(mode, parsedResult);
+  }
+
+  Future<void> _doUpdateBalanceForMode(GameMode mode, InAppWebViewController controller) async {
+    if (_isDisposed) return;
+
+    final String jsCode = _getBalanceJs(mode);
+
     const int maxRetries = 5;
     const List<Duration> retryDelays = [
       Duration(milliseconds: 200),
@@ -673,11 +937,11 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
 
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        final result = await _webViewController!.evaluateJavascript(
+        final result = await controller.evaluateJavascript(
           source: jsCode,
         );
 
-        if (result != null && result.toString().isNotEmpty) {
+        if (result != null && result.toString().isNotEmpty && result.toString() != 'null') {
           // Parse JSON response to get coin type and balance
           Map<String, dynamic>? parsedResult;
           try {
@@ -688,92 +952,20 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
               result.toString().replaceAll(',', '').trim(),
             );
             if (balance != null && balance >= 0) {
-              _currentBalance = balance.toString().replaceAll(',', '').trim();
-              _initialBalance ??= _currentBalance;
-
-              final initial = double.tryParse(_initialBalance!);
-              final current = balance;
-              if (initial != null && initial > 0) {
-                _profitPercentage = ((current - initial) / initial) * 100;
-                _checkBalanceWarning();
-              }
-
-              debugPrint(
-                "[BalanceTracker] Success: $_currentBalance (Attempt $attempt) - Legacy mode",
+              final defaultCoin = _detectedCoinTypeByMode[mode] ?? (mode == GameMode.mines ? 'POL' : 'DOGE');
+              _applyParsedBalanceResult(
+                mode,
+                {'coin': defaultCoin, 'balance': result.toString()},
+                attempt: attempt,
+                notify: true,
               );
-              notifyListeners();
               return;
             }
           }
 
           if (parsedResult != null) {
-            final String coinType = parsedResult['coin'] ?? 'UNKNOWN';
-            final String balanceValue =
-                parsedResult['balance']?.toString() ?? '';
-            final balance = double.tryParse(
-              balanceValue.replaceAll(',', '').trim(),
-            );
-
-            if (balance != null && balance >= 0) {
-              _detectedCoinType = coinType;
-              _currentBalance = balanceValue;
-
-              // Set initial balance for this coin type if not already set
-              if (!_initialBalances.containsKey(coinType)) {
-                _initialBalances[coinType] = balanceValue;
-              }
-
-              // Track highest balance for this coin type
-              if (!_highestBalances.containsKey(coinType)) {
-                _highestBalances[coinType] = balanceValue;
-              } else {
-                final currentHighest =
-                    double.tryParse(
-                      _highestBalances[coinType]!.replaceAll(',', ''),
-                    ) ??
-                    0;
-                if (balance > currentHighest) {
-                  _highestBalances[coinType] = balanceValue;
-                  debugPrint(
-                    "[BalanceTracker] New highest for $coinType: $balanceValue",
-                  );
-                }
-              }
-
-              // Track overall highest balance across all coins
-              if (_overallHighestBalance == null) {
-                _overallHighestBalance = balanceValue;
-                _overallHighestCoin = coinType;
-              } else {
-                final overallHighest =
-                    double.tryParse(
-                      _overallHighestBalance!.replaceAll(',', ''),
-                    ) ??
-                    0;
-                if (balance > overallHighest) {
-                  _overallHighestBalance = balanceValue;
-                  _overallHighestCoin = coinType;
-                  debugPrint(
-                    "[BalanceTracker] New overall highest: $coinType $balanceValue",
-                  );
-                }
-              }
-
-              final initial = double.tryParse(
-                _initialBalances[coinType] ?? '0',
-              );
-              final current = balance;
-              if (initial != null && initial > 0) {
-                _profitPercentage = ((current - initial) / initial) * 100;
-                _checkBalanceWarning();
-              }
-
-              debugPrint(
-                "[BalanceTracker] Success: $coinType $_currentBalance (Attempt $attempt) | Highest: $_overallHighestBalance",
-              );
-              notifyListeners();
-              return;
-            }
+            _applyParsedBalanceResult(mode, parsedResult, attempt: attempt, notify: true);
+            return;
           }
         }
       } catch (e) {
@@ -819,73 +1011,16 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   Future<void> _doUpdateBalanceSingleAttempt() async {
     if (_isDisposed || _webViewController == null) return;
 
-    const String jsCode = r"""
-      (function() {
-        try {
-          const text = document.body.innerText || "";
-          const coins = [
-            {regex: /Bitcoin\s*\(BTC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BTC'},
-            {regex: /Ethereum\s*\(ETH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ETH'},
-            {regex: /Dogecoin\s*\(DOGE\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DOGE'},
-            {regex: /Litecoin\s*\(LTC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'LTC'},
-            {regex: /Bitcoin Cash\s*\(BCH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BCH'},
-            {regex: /Dash\s*\(DASH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DASH'},
-            {regex: /Digibyte\s*\(DGB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DGB'},
-            {regex: /Tron\s*\(TRX\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TRX'},
-            {regex: /Tether\s*\(USDT\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDT'},
-            {regex: /USDT\s*\(USDT\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDT'},
-            {regex: /Feyorra\s*\(FEY\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'FEY'},
-            {regex: /Zcash\s*\(ZEC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ZEC'},
-            {regex: /Binance Coin\s*\(BNB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BNB'},
-            {regex: /BNB\s*\(BNB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BNB'},
-            {regex: /Solana\s*\(SOL\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'SOL'},
-            {regex: /Ripple\s*\(XRP\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XRP'},
-            {regex: /XRP\s*\(XRP\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XRP'},
-            {regex: /Polygon\s*\(POL\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'POL'},
-            {regex: /Cardano\s*\(ADA\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ADA'},
-            {regex: /Ton\s*\(TON\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TON'},
-            {regex: /TON\s*\(TON\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TON'},
-            {regex: /Stellar\s*\(XLM\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XLM'},
-            {regex: /USDC\s*\(USDC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDC'},
-            {regex: /Monero\s*\(XMR\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XMR'},
-            {regex: /Taraxa\s*\(TARA\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TARA'}
-          ];
-          for (const pattern of coins) {
-            const match = text.match(pattern.regex);
-            if (match && match[1]) {
-              const balance = parseFloat(match[1].replace(/,/g, ''));
-              if (!isNaN(balance) && balance > 0 && balance < 100000000) {
-                return JSON.stringify({coin: pattern.coin, balance: match[1]});
-              }
-            }
-          }
-          return null;
-        } catch (e) { return null; }
-      })();
-    """;
+    final String jsCode = _getBalanceJs(gameMode);
 
     try {
       final result = await _webViewController!.evaluateJavascript(source: jsCode);
-      if (result != null && result.toString().isNotEmpty) {
+      if (result != null && result.toString().isNotEmpty && result.toString() != 'null') {
         Map<String, dynamic>? parsedResult;
         try { parsedResult = jsonDecode(result.toString()); } catch (_) {}
 
         if (parsedResult != null) {
-          final String coinType = parsedResult['coin'] ?? 'UNKNOWN';
-          final String balanceValue = parsedResult['balance']?.toString() ?? '';
-          final balance = double.tryParse(balanceValue.replaceAll(',', '').trim());
-
-          if (balance != null && balance >= 0) {
-            _detectedCoinType = coinType;
-            _currentBalance = balanceValue;
-            _initialBalances.putIfAbsent(coinType, () => balanceValue);
-
-            final initial = double.tryParse(_initialBalances[coinType] ?? '0');
-            if (initial != null && initial > 0) {
-              _profitPercentage = ((balance - initial) / initial) * 100;
-            }
-            // No notifyListeners() here — this is called from timer, UI updates via monitor
-          }
+          _applyParsedBalanceResult(gameMode, parsedResult, notify: false);
         }
       }
     } catch (_) {}
@@ -967,7 +1102,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  SequenceAnalyzerViewModel() {
+  SequenceAnalyzerViewModel({this.gameMode = GameMode.towers}) {
     _rulesEngine = AdvancedRulesEngine(buttonValues);
     _timeSeriesEngine = TimeSeriesEngine(buttonValues);
     _nGramEngine = NGramEngine();
@@ -1068,6 +1203,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     String? actualBombPos,
     double multiplier = 1.0,
     String? selectedAction,
+    bool? isWin,
   }) async {
     if (_isCalculating) return; // Prevent concurrent execution
 
@@ -1094,6 +1230,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
         actualBombPos: actualBombPos,
         multiplier: multiplier,
         selectedAction: selectedAction,
+        isWin: isWin,
       );
       // Hybrid trigger: also update balance after prediction
       await updateBalance();
@@ -1113,6 +1250,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     String? actualBombPos,
     double multiplier = 1.0,
     String? selectedAction,
+    bool? isWin,
   }) {
     // 🚨 V15.2 SANITIZER: Prevent 'Unknown' virus from entering the AI state machine.
     final String actualPlayedForSanitizer = selectedAction ?? _lastPredictedChar ?? 'A';
@@ -1132,30 +1270,23 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
         _correctPredictions++;
         _correctStreak++;
         _incorrectStreak = 0;
+        _currentLossSequence = '';
       } else {
         _correctStreak = 0;
         _incorrectStreak++;
+        _currentLossSequence += evaluatedAction;
+        if (_incorrectStreak > _maxLossStreak) {
+            _maxLossStreak = _incorrectStreak;
+            _maxLossSequence = _currentLossSequence;
+        }
 
         // V37.4 TITANIUM: Seed Rotation on Consecutive Loss
         if (_incorrectStreak >= 2) {
           _rotateSeed();
         }
 
-        // 🔄 NEW: More Resilient Mode Switching
-        if (_predictionMode == 'copy_user') {
-          // If Copy User is wrong, the user's pattern isn't simple. Switch to AI.
-          _predictionMode = 'ai_model';
-          debugPrint(
-            '[SWITCH] Mode switched to: ai_model (Copy User was wrong)',
-          );
-        } else if (_predictionMode == 'ai_model' && _incorrectStreak >= 2) {
-          // V29.2: Faster panic switch (2 losses)
-          _predictionMode = 'copy_user';
-          debugPrint(
-            '[SWITCH] Mode switched to: copy_user (AI wrong 2x, panic reset)',
-          );
-        }
-        // otherwise, if AI is wrong but streak < 3, STAY in AI mode to learn.
+        // 🧠 Enforce AI Brain: Stay in ai_model to allow AI engines & V70 Inversion to adapt
+        _predictionMode = 'ai_model';
       }
 
       // Update Engines with round outcome
@@ -1196,6 +1327,10 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       if (_recentResults.length > 10) _recentResults.removeAt(0);
       _antiResistanceAccuracy =
           _recentResults.where((r) => r).length / _recentResults.length;
+
+      // Update Live 20-Round Win Rate for Dynamic Scalping
+      _recent20Results.add(wasCorrect);
+      if (_recent20Results.length > 20) _recent20Results.removeAt(0);
 
       // Deductive Logic Update
       _analyzeGameLogic(value, wasCorrect);
@@ -1284,16 +1419,19 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     // 2. Add new input with correct isRed status
     // If actualPlayed is Unknown, we MUST assume we played the predicted char to track the loss.
     final String actualPlayed = selectedAction ?? _lastPredictedChar ?? 'Unknown';
-    bool isRed = (actualPlayed != 'Unknown') ? (actualPlayed != value) : (_lastPredictedChar != null ? _lastPredictedChar != value : false);
+    bool isRed = isWin != null
+        ? !isWin
+        : ((actualPlayed != 'Unknown') ? (actualPlayed != value) : (_lastPredictedChar != null ? _lastPredictedChar != value : false));
     
     // Safety: If it's literally NOT a win, and it's not Unknown, it's RED.
-    if (actualPlayed != 'Unknown' && actualPlayed != value) isRed = true;
+    if (isWin == false || (actualPlayed != 'Unknown' && actualPlayed != value)) isRed = true;
 
     // V18.1: Instant Feedback
     _shadowHunter.recordRound(
       clickedPos: actualPlayed == 'Unknown' ? null : actualPlayed,
       bombPos: actualBombPos,
       won: !isRed,
+      entropy: _normalizedEntropy,
     );
 
     // --- V9.0 Reactive Learning Check ---
@@ -1582,10 +1720,15 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       await prefs.setString('learning_memory', jsonData);
       await prefs.setInt('total_predictions', _totalPredictions);
       await prefs.setInt('correct_predictions', _correctPredictions);
+      await prefs.setInt('max_loss_streak', _maxLossStreak);
+      await prefs.setString('max_loss_sequence', _maxLossSequence);
 
       // Save Rule Weights
       final weightsData = jsonEncode(_rulesEngine.ruleWeights);
       await prefs.setString('rule_weights', weightsData);
+      
+      // Save NGram Persistent Memory
+      await _nGramEngine.saveToPrefs();
 
       debugPrint("💾 Learning data + Rule weights saved to device");
     } catch (e) {
@@ -1609,6 +1752,8 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       }
       _totalPredictions = prefs.getInt('total_predictions') ?? 0;
       _correctPredictions = prefs.getInt('correct_predictions') ?? 0;
+      _maxLossStreak = prefs.getInt('max_loss_streak') ?? 0;
+      _maxLossSequence = prefs.getString('max_loss_sequence') ?? '';
 
       // Load Rule Weights
       final weightsJson = prefs.getString('rule_weights');
@@ -1619,6 +1764,9 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
         });
         debugPrint("🧬 Loaded ${_rulesEngine.ruleWeights.length} rule weights");
       }
+      
+      // Load NGram Persistent Memory
+      await _nGramEngine.loadFromPrefs();
 
       notifyListeners();
     } catch (e) {
@@ -1703,7 +1851,8 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
 
       // Ban the last wrong choice for a shorter duration (V16.8: 2 rounds)
       if (_lastPredictedChar != null) {
-        _banList[_lastPredictedChar!] = 2;
+        // Reverse Psychology Banning Disabled: Pure Math & Stats Mode
+      // _banList[_lastPredictedChar!] = 2;
       }
       _adisEmergencyReset();
     } else {
@@ -1809,6 +1958,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       learningMemory: _learningMemory,
       isHighRisk: isHighRiskOverride, // V28.0 Superpower Guard
       nonce: _totalPredictions, // V36.1 True Nonce
+      normalizedEntropy: _normalizedEntropy, // V70.1 Anti-Overthinking Gate
       timeSeriesEngine: _timeSeriesEngine,
       v13Engine: _v13Engine,
       shadowHunter: _shadowHunter,
@@ -2022,6 +2172,11 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
       ).timeout(const Duration(milliseconds: 5000));
       
       if (response.statusCode == 200) {
+        _isServerHealthy = true;
+        _consecutiveServerFailures = 0;
+        _hasCriticalServerError = false;
+        _lastServerErrorReason = null;
+        
         final data = jsonDecode(response.body);
         debugPrint(
           "📤 Feedback sent! Samples: ${data['samples_collected']}, Model Updated: ${data['model_updated']}",
@@ -2033,14 +2188,14 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
           await _reloadModelFromServer();
         }
       } else {
-        if (response.statusCode == 404) {
-          debugPrint("❌ Server Error 404: Endpoint not found. Please check if your Server URL (ngrok) is still active.");
-        } else {
-          debugPrint("❌ Server Error: ${response.statusCode}");
-        }
+        _isServerHealthy = false;
+        _lastServerErrorReason = "HTTP ${response.statusCode}";
+        debugPrint("ℹ️ [STANDALONE] Server feedback skipped (HTTP ${response.statusCode}). Using on-device AI.");
       }
     } catch (e) {
-      debugPrint("❌ Network Error sending feedback: $e");
+      _isServerHealthy = false;
+      _lastServerErrorReason = "$e";
+      debugPrint("ℹ️ [STANDALONE] Server offline ($e). Running 100% on-device AI.");
     }
   }
 
@@ -2119,7 +2274,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     // _totalPredictions and _correctPredictions preserved
     _correctStreak = 0;
     _incorrectStreak = 0;
-    _predictionMode = 'copy_user'; // 🔄 Reset to Copy User mode
+    _predictionMode = 'ai_model'; // 🧠 Enforce AI Brain mode
 
     // 🔥 Keep learning memory! Don't clear it.
     // _learningMemory.clear();  <- Commented out to preserve memory

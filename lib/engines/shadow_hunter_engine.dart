@@ -15,6 +15,7 @@ class ShadowHunterEngine {
     required String? clickedPos,
     required String? bombPos,
     required bool won,
+    double entropy = 0.0,
   }) {
     if (clickedPos == null || bombPos == null) return;
 
@@ -43,8 +44,9 @@ class ShadowHunterEngine {
     }
 
     // High sensitivity formula
-    _huntCertainty = (_huntStreak * 0.45) + (matchesInLast5 / 5.0);
-    _huntCertainty = _huntCertainty.clamp(0.0, 1.0);
+    double baseCertainty = (_huntStreak * 0.45) + (matchesInLast5 / 5.0);
+    
+    _huntCertainty = baseCertainty.clamp(0.0, 1.0);
   }
 
   /// V18.1: Immediate Deception for fast-moving traps

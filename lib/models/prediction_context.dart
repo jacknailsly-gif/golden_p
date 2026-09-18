@@ -11,6 +11,7 @@ class PredictionContext {
   final Map<String, Map<String, int>> learningMemory;
   final bool isHighRisk; // V28.0: True during recovery/escalation rounds
   final int nonce; // V36.1: True Nonce for Cryptographic Determinism
+  final double normalizedEntropy; // V70.1: Normalized Entropy for Anti-Overthinking (0.0 to 1.0)
   
   // Engines passed by reference for the pipeline to use
   final TimeSeriesEngine timeSeriesEngine;
@@ -25,6 +26,7 @@ class PredictionContext {
     required this.learningMemory,
     this.isHighRisk = false,
     required this.nonce,
+    this.normalizedEntropy = 0.0,
     required this.timeSeriesEngine,
     required this.v13Engine,
     required this.shadowHunter,

@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/models/overlay_button.dart';
+import 'package:golden_p/models/game_mode.dart';
 
 class OverlayButtonsPanel extends StatefulWidget {
   final Size screenSize;
+  final GameMode gameMode;
 
-  const OverlayButtonsPanel({super.key, required this.screenSize});
+  const OverlayButtonsPanel({
+    super.key,
+    required this.screenSize,
+    this.gameMode = GameMode.towers,
+  });
 
   @override
   State<OverlayButtonsPanel> createState() => _OverlayButtonsPanelState();
@@ -32,17 +38,19 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
 
   // ===== Build Marker Buttons =====
   List<Widget> _buildMarkerButtons(OverlayButtonsViewModel viewModel) {
-    return viewModel.buttons.map((button) {
-      final bool isActive = viewModel.activeButtonId == button.id;
+    final buttons = viewModel.getButtons(widget.gameMode);
+    return buttons.map((button) {
+      final bool isActive =
+          viewModel.getActiveButtonId(widget.gameMode) == button.id;
       final bool isRecording = viewModel.recordingButtonId == button.id;
       final bool isDragging = viewModel.draggingButtonId == button.id;
 
-      // Special Sizing for M4 and M5 (Less intrusive, fit exactly 1/2 and 2x web buttons)
-      final bool isSmallMarker = button.id == 'M4' || button.id == 'M5';
-      final double baseWidth = isSmallMarker ? 32.0 : 48.0;
-      final double baseHeight = isSmallMarker ? 32.0 : 48.0;
-      final double activeWidth = isSmallMarker ? 36.0 : 54.0;
-      final double activeHeight = isSmallMarker ? 36.0 : 54.0;
+      // Special Sizing for M1-M5 (Less intrusive, fit exactly in grid slots for Tower/Mines)
+      final bool isSmallMarker = button.id != 'M0';
+      final double baseWidth = isSmallMarker ? (widget.gameMode == GameMode.mines ? 18.0 : 22.0) : 44.0;
+      final double baseHeight = isSmallMarker ? (widget.gameMode == GameMode.mines ? 18.0 : 22.0) : 44.0;
+      final double activeWidth = isSmallMarker ? (widget.gameMode == GameMode.mines ? 22.0 : 26.0) : 48.0;
+      final double activeHeight = isSmallMarker ? (widget.gameMode == GameMode.mines ? 22.0 : 26.0) : 48.0;
 
       return Positioned(
         left: button.position.dx,
@@ -60,10 +68,15 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
                 viewModel.updateButtonPosition(
                   button.id,
                   button.position + details.delta,
+                  mode: widget.gameMode,
                 );
               },
               onPanEnd: (_) {
-                viewModel.saveButtonPosition(button.id, button.position);
+                viewModel.saveButtonPosition(
+                  button.id,
+                  button.position,
+                  mode: widget.gameMode,
+                );
                 viewModel.setDraggingButtonId(null);
               },
               onLongPress: () => viewModel.startRecording(button.id),
@@ -91,16 +104,18 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
 
   // ===== Unified Draggable Control Bar =====
   Widget _buildUnifiedControl(OverlayButtonsViewModel viewModel) {
+    final Offset ctrlPos = viewModel.getControlPosition(widget.gameMode);
     return Positioned(
-      left: viewModel.controlPosition.dx,
-      top: viewModel.controlPosition.dy,
+      left: ctrlPos.dx,
+      top: ctrlPos.dy,
       child: GestureDetector(
         onPanUpdate: (details) {
           viewModel.updateControlPosition(
-            viewModel.controlPosition + details.delta,
+            ctrlPos + details.delta,
+            mode: widget.gameMode,
           );
         },
-        onPanEnd: (_) => viewModel.saveControlPosition(),
+        onPanEnd: (_) => viewModel.saveControlPosition(mode: widget.gameMode),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeInOut,
@@ -126,6 +141,7 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
   }
 
   Widget _buildCollapsedTrigger(OverlayButtonsViewModel viewModel) {
+    final bool isRunning = viewModel.isRunningForMode(widget.gameMode);
     return InkWell(
       onTap: () => viewModel.toggleControlCollapsed(),
       child: Container(
@@ -138,7 +154,7 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
               color: Colors.orangeAccent,
               size: 28,
             ),
-            if (viewModel.isSequenceRunning)
+            if (isRunning)
               Positioned(
                 right: 0,
                 top: 0,
@@ -158,6 +174,7 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
   }
 
   Widget _buildExpandedControls(OverlayButtonsViewModel viewModel) {
+    final bool isRunning = viewModel.isRunningForMode(widget.gameMode);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -172,14 +189,10 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
 
         // Start/Stop
         _buildActionControl(
-          icon: viewModel.isSequenceRunning
-              ? Icons.stop_rounded
-              : Icons.play_arrow_rounded,
-          label: viewModel.isSequenceRunning ? 'STOP' : 'START',
-          color: viewModel.isSequenceRunning
-              ? Colors.redAccent
-              : Colors.greenAccent,
-          onTap: () => viewModel.toggleSequence(),
+          icon: isRunning ? Icons.stop_rounded : Icons.play_arrow_rounded,
+          label: isRunning ? 'STOP' : 'START',
+          color: isRunning ? Colors.redAccent : Colors.greenAccent,
+          onTap: () => viewModel.toggleSequence(mode: widget.gameMode),
         ),
 
         const Padding(
@@ -198,6 +211,16 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
           color: viewModel.isSmartMode ? Colors.purpleAccent : Colors.white60,
           onTap: () => viewModel.toggleSmartMode(),
           tooltip: 'Smart Mode',
+        ),
+
+        // 🌟 24/7 Autonomous Continuous Mode Toggle
+        _buildSmallControl(
+          icon: viewModel.is24HourMode
+              ? Icons.all_inclusive_rounded
+              : Icons.hourglass_disabled_rounded,
+          color: viewModel.is24HourMode ? Colors.amberAccent : Colors.white60,
+          onTap: () => viewModel.toggle24HourMode(),
+          tooltip: viewModel.is24HourMode ? '24/7 Mode: ON (Non-stop)' : '24/7 Mode: OFF',
         ),
 
         // Visibility
@@ -241,6 +264,42 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
           tooltip: viewModel.recoveryMode == 1
               ? 'Mode 1: Risk Distribution'
               : 'Mode 2: Profit Boost',
+        ),
+
+        // Recover Profit Level (Default Level 8: 48% on Mine, Level 7: 42% on Towers)
+        GestureDetector(
+          onTap: () => viewModel.cycleRecoveryProfitLevel(mode: widget.gameMode),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            decoration: BoxDecoration(
+              color: Colors.indigoAccent.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: Colors.indigoAccent.withValues(alpha: 0.6),
+                width: 1.2,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.trending_up_rounded,
+                  color: Colors.indigoAccent,
+                  size: 16,
+                ),
+                const SizedBox(width: 3),
+                Text(
+                  'L${viewModel.getRecoveryProfitLevel(widget.gameMode)} (${(viewModel.getRecoveryProfitPercent(widget.gameMode) * 100).round()}%)',
+                  style: const TextStyle(
+                    color: Colors.indigoAccent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );

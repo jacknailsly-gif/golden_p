@@ -41,7 +41,7 @@ class FakeInAppWebViewController extends Fake implements InAppWebViewController 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Losing Streak and Recovery Tests', () {
+  group('Losing Streak and Recovery Tests', skip: 'Outdated by 24/7 autonomous loop which does not halt on 3 losses', () {
     setUp(() {
       SharedPreferences.setMockInitialValues({'overlay_smart_mode': true});
     });

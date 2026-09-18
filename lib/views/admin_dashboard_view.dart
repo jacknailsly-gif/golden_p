@@ -19,6 +19,13 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
   @override
   void initState() {
     super.initState();
+    if (!AuthService.isAdmin || !AuthService.hasValidSession) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pop();
+      });
+      return;
+    }
     _fetchAllData();
   }
 
@@ -48,7 +55,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
   Future<void> _fetchMetrics() async {
     final token = AuthService.currentToken ?? '';
     final response = await http.get(
-      Uri.parse('http://127.0.0.1:3000/api/v1/admin/metrics'),
+      Uri.parse('${AuthService.adminBaseUrl}/metrics'),
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode == 200) {
@@ -60,7 +67,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
   Future<void> _fetchUserStats() async {
     final token = AuthService.currentToken ?? '';
     final response = await http.get(
-      Uri.parse('http://127.0.0.1:3000/api/v1/admin/users/stats'),
+      Uri.parse('${AuthService.adminBaseUrl}/users/stats'),
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode == 200) {
@@ -72,7 +79,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
   Future<void> _fetchUsers() async {
     final token = AuthService.currentToken ?? '';
     final response = await http.get(
-      Uri.parse('http://127.0.0.1:3000/api/v1/admin/users'),
+      Uri.parse('${AuthService.adminBaseUrl}/users'),
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode == 200) {
@@ -85,7 +92,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
     final token = AuthService.currentToken ?? '';
     try {
       final response = await http.patch(
-        Uri.parse('http://127.0.0.1:3000/api/v1/admin/users/$userId/status'),
+        Uri.parse('${AuthService.adminBaseUrl}/users/$userId/status'),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
@@ -111,7 +118,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
     final token = AuthService.currentToken ?? '';
     try {
       final response = await http.delete(
-        Uri.parse('http://127.0.0.1:3000/api/v1/admin/users/$userId'),
+        Uri.parse('${AuthService.adminBaseUrl}/users/$userId'),
         headers: {'Authorization': 'Bearer $token'},
       );
       if (response.statusCode == 200) {
@@ -139,7 +146,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
       );
 
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:3000/api/v1/admin/logs'),
+        Uri.parse('${AuthService.adminBaseUrl}/logs'),
         headers: {'Authorization': 'Bearer $token'},
       );
       

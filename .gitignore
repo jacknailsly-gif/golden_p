@@ -43,3 +43,22 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Workspace specific ignores
+golden_p/
+scratch/
+monitor_logs/
+training_data/
+node_modules/
+.gemini/
+*.backup_*
+diff.txt
+workspace_probe.txt
+ai_state.json
+optimized_params.json
+test_clicks.js
+test_jsdom.js
+test_regex.dart
+package.json
+package-lock.json
+

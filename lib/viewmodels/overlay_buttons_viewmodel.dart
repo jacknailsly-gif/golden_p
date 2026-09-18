@@ -237,9 +237,14 @@ class GameModeSessionState {
   /// 🛡️ Centralized Recovery Gate: Authoritative single source of truth for Recovery eligibility.
   /// คำสั่งผู้ใช้:
   /// "ปกติ แพ้ทวง แพ้ทวง แพ้ กลับ Base bet
-  ///  ถ้ารอบ 1 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
-  ///  ถ้ารอบ 2 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
-  ///  ถ้ารอบ 3 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก"
+  /// คำนวณจำนวนตาดูเชิงหลังแพ้ครบ 3 ตา (คำสั่งผู้ใช้: 8-12 ตา)
+  int generatePostLossObservationRounds() {
+    return 8 + Random().nextInt(5); // 8, 9, 10, 11, 12
+  }
+
+  /// 🛡️ Centralized Recovery Gate: Authoritative single source of truth for Recovery eligibility.
+  /// คำสั่งผู้ใช้:
+  /// "ต้องทวงทันที ที่แพ้ เมื่อแพ้ 3 ตา ต่อกัน กลับไปที้ Base bet 8-12 ตา"
   bool canEnterRecovery({OmniPredictionResult? omniResult, double? floorBet}) {
     const double debtEpsilon = 0.00000001;
 
@@ -253,20 +258,12 @@ class GameModeSessionState {
       return false;
     }
 
-    // 3. DEBT REQUIREMENT (Priority 3)
+    // 3. DEBT REQUIREMENT (Priority 3) - คำสั่งผู้ใช้: "ต้องทวงทันที ที่แพ้"
     if (totalAccumulatedLoss <= debtEpsilon) {
       return false;
     }
 
-    // 🎯 AQ-DARE PILLAR 1: PASSIVE DEBT MELTING
-    // หนี้ขนาดเล็กมาก (< 5x Base Bet) ไม่คุ้มค่าความเสี่ยงที่จะออกไม้ทวงหนี้ขนาดใหญ่
-    // ปล่อยให้ Base Bet เดินตามปกติและเอากำไรมาละลายหนี้ทิ้งแบบ 0% Risk to Principal
-    final double? effectiveFloor = floorBet ?? lockedBaseBet;
-    if (effectiveFloor != null && effectiveFloor > 0 && totalAccumulatedLoss < effectiveFloor * 5.0) {
-      return false;
-    }
-
-    // 4. OBSERVATION LOCK (Priority 4) - ต้องผ่านช่วงดูเชิง 15-25 ตา ให้ครบก่อน
+    // 4. OBSERVATION LOCK (Priority 4) - ต้องผ่านช่วงดูเชิง 8-12 ตา ให้ครบก่อน
     if (observationRoundsRemaining > 0 || isLossStreakBaseBetLocked || recoveryState == RecoveryState.observation) {
       return false;
     }
@@ -276,22 +273,9 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. AQ-DARE PILLAR 3: PURE EDGE SNIPER GATE (Priority 5)
-    // ระบบทายคัดกรอง Sniper Recovery ขั้นสูงสุด:
-    // ห้ามทวงหาก:
-    // - OmniMatrix ส่งสัญญาณ Hold Fire
-    // - ความผันผวน Chaos >= 0.50 (ลดจาก 0.70 เพื่อความคมชัดสูงสุด)
-    // - ค่าความมั่นใจต่ำกว่า 75%
-    // - Mathematical Edge ต่ำกว่า +5% (edge < 0.05)
+    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คัดกรองเฉพาะภาวะวิกฤติตลาดผันผวนสูงลิ่ว (Chaos > 0.70) หรือ Hold Fire
     if (omniResult != null) {
-      final double normalizedConf = omniResult.confidence <= 1.0
-          ? omniResult.confidence * 100.0
-          : omniResult.confidence;
-
-      if (omniResult.recoveryClearance == RecoveryClearance.holdFire ||
-          omniResult.chaosIndex >= 0.50 ||
-          normalizedConf < 75.0 ||
-          omniResult.mathematicalEdge < 0.05) {
+      if (omniResult.recoveryClearance == RecoveryClearance.holdFire || omniResult.chaosIndex > 0.70) {
         return false;
       }
     }
@@ -2414,7 +2398,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
             // 🎯 คำสั่งผู้ใช้ (ระบบสุ่มทวง 1-3 ตา ถ่วงน้ำหนัก):
             // หากแพ้ครบโควตาสุ่มในรอบนี้ (maxRecoveryStepsThisCycle) หรือแตะเพดาน 3 ตา
-            // ให้ถอยกลับไป Base Bet ทันที รอ 15-25 ตา แล้วค่อยทวงในรอบถัดไป
+            // ให้ถอยกลับไป Base Bet ทันที รอ 8-12 ตา แล้วค่อยทวงในรอบถัดไป
             if (state.recoveryStepInCycle >= state.maxRecoveryStepsThisCycle ||
                 (state.currentRecoveryCycle == 1 && state.recoveryStepInCycle >= 2) ||
                 state.recoveryStepInCycle >= 3) {
@@ -2423,14 +2407,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
               state.consecutiveLossesStreak = 3;
               state.isLossStreakBaseBetLocked = true;
               state.isCurrentlyRecoveryRound = false;
-              final int obsRounds = 15 + Random().nextInt(11);
+              final int obsRounds = state.generatePostLossObservationRounds();
               state.observationRoundsRemaining = obsRounds;
               state.currentRecoveryCycle = (finishedCycle % 3) + 1; // 1 -> 2, 2 -> 3, 3 -> 1
               transitionRecoveryState(mode, RecoveryState.observation,
                   reason: 'Cycle $finishedCycle: Reached quota (${state.maxRecoveryStepsThisCycle} steps) -> retreat to Base Bet observation for $obsRounds rounds (Next: Cycle ${state.currentRecoveryCycle})');
               debugPrint(
                 '🛑 [ครบโควตาสุ่มทวง ${state.maxRecoveryStepsThisCycle} ไม้ กลับ Base bet 🛡️] [${mode.displayName}] รอบที่ $finishedCycle สุ่มทวงครบ ${state.maxRecoveryStepsThisCycle} ไม้แล้วยังไม่ชนะ! '
-                'ตาต่อไปห้ามทวงเด็ดขาด! ถอยกลับไปเดิน Base Bet รอครบ $obsRounds ตา (15-25 ตา) -> แล้วทวงทันที (รอบที่ ${state.currentRecoveryCycle}${finishedCycle == 3 ? " วนกลับไปรอบแรก" : ""})',
+                'ตาต่อไปห้ามทวงเด็ดขาด! ถอยกลับไปเดิน Base Bet รอครบ $obsRounds ตา (8-12 ตา) -> แล้วทวงทันที (รอบที่ ${state.currentRecoveryCycle}${finishedCycle == 3 ? " วนกลับไปรอบแรก" : ""})',
               );
               await _ensureBaseBet(runToken, mode: mode);
             } else {

@@ -238,18 +238,28 @@ void main() {
       expect(state.recoveryStepInCycle >= state.maxRecoveryStepsThisCycle, isTrue);
     });
 
-    test('AQ-DARE Pillar 1: Passive Debt Melting rejects recovery for tiny debts (< 5x Base Bet)', () {
+    test('User Directive: Immediate recovery upon losing (No passive melting lockout)', () {
       final double floorBet = state.lockedBaseBet!; // 0.00007880
-      state.activeNewLoss = floorBet * 2.0; // 2x Base Bet (< 5x Base Bet)
+      state.activeNewLoss = floorBet * 1.0; // 1x Base Bet loss
       state.consecutiveLossesStreak = 1;
       state.observationRoundsRemaining = 0;
       state.isLossStreakBaseBetLocked = false;
       state.recoveryState = RecoveryState.recoveryGate;
 
-      // When debt is tiny, canEnterRecovery must return false to let Base Bet melt it with zero risk
+      // Must recover immediately upon losing: canEnterRecovery must be true
       final bool approved = state.canEnterRecovery(floorBet: floorBet);
-      expect(approved, isFalse,
-          reason: 'Tiny debts (< 5x Base Bet) must be melted passively with zero risk');
+      expect(approved, isTrue,
+          reason: 'Must recover immediately upon losing as directed by user');
+    });
+
+    test('User Directive: 3 consecutive losses retreats to Base Bet for 8-12 rounds', () {
+      // Simulate generating observation rounds for 3 consecutive losses
+      // The requirement specifies 8-12 rounds
+      for (int i = 0; i < 100; i++) {
+        final int obsRounds = state.generatePostLossObservationRounds();
+        expect(obsRounds, inInclusiveRange(8, 12),
+            reason: 'Observation rounds after 3 losses must be between 8 and 12');
+      }
     });
 
     test('AQ-DARE Pillar 2: Dynamic Debt Slicing reduces required bet by ~75% (25% slice)', () {

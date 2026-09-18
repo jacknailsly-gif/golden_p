@@ -637,106 +637,126 @@ class OmniMatrixEngine {
     final outcomes = _outcomeHistoryByMode[mode] ?? [];
     final bombs = _bombHistoryByMode[mode] ?? [];
 
-    // ─── 1. BASELINE EMPIRICAL REPUTATION SCORE ───
-    final Map<String, double> scores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
-
-    // ─── 2. MARKOV BOMB DODGER (Order-1 Bomb Transition) ───
-    final Map<String, double> markovScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
-    if (bombs.length >= 2) {
-      final lastBomb = bombs.last;
-      final Map<String, double> bombTransitions = {'A': 1.0, 'B': 1.0, 'C': 1.0};
-      for (int i = 0; i < bombs.length - 1; i++) {
-        if (bombs[i] == lastBomb) {
-          final nextB = bombs[i + 1];
-          bombTransitions[nextB] = (bombTransitions[nextB] ?? 1.0) + 1.0;
-        }
-      }
-      final double totalTrans = bombTransitions.values.fold(0.0, (a, b) => a + b);
-      for (final c in columns) {
-        final double pBombTrans = (bombTransitions[c] ?? 1.0) / totalTrans;
-        markovScores[c] = 1.5 - pBombTrans;
-      }
-    }
-
-    // ─── 3. N-GRAM PATTERN MATCHER (Order-2 Bomb Sequence: B_{t-2} -> B_{t-1} -> B_t) ───
-    final Map<String, double> ngramScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
-    if (bombs.length >= 3) {
-      final b1 = bombs[bombs.length - 2];
-      final b2 = bombs[bombs.length - 1];
-      final Map<String, double> ngramCounts = {'A': 0.0, 'B': 0.0, 'C': 0.0};
-      for (int i = 0; i < bombs.length - 2; i++) {
-        if (bombs[i] == b1 && bombs[i + 1] == b2) {
-          final nextB = bombs[i + 2];
-          ngramCounts[nextB] = (ngramCounts[nextB] ?? 0.0) + 1.0;
-        }
-      }
-      final double totalNg = ngramCounts.values.fold(0.0, (a, b) => a + b);
-      if (totalNg > 0) {
-        for (final c in columns) {
-          final double pNgBomb = (ngramCounts[c] ?? 0.0) / totalNg;
-          ngramScores[c] = 1.0 - 0.45 * pNgBomb;
-        }
-      }
-    }
-
-    // ─── 4. RECENCY EXPONENTIAL DECAY (Heatmap Bomb Avoidance) ───
-    final Map<String, double> recencyScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
-    final int recentBombWindow = min(15, bombs.length);
-    if (recentBombWindow > 0) {
-      final recentBombs = bombs.sublist(bombs.length - recentBombWindow);
-      for (int i = 0; i < recentBombs.length; i++) {
-        final b = recentBombs[i];
-        final double decay = pow(0.88, recentBombs.length - 1 - i).toDouble();
-        recencyScores[b] = (recencyScores[b] ?? 1.0) * (1.0 - 0.25 * decay);
-      }
-    }
-
-    // ─── 5. GOLDEN HIGHWAY ELIMINATION & ANTI-CLUSTERING DETECTOR ───
+    // ─── 1. BAYESIAN BOMB RISK & PATTERN DETECTOR ───
+    final Map<String, double> bombRisk = {'A': 1.0 / 3.0, 'B': 1.0 / 3.0, 'C': 1.0 / 3.0};
     final Map<String, double> antiClusterScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
     String? goldenHighwayCol;
     String? stickyBombCol;
     String? pingPongB0;
     String? pingPongB1;
 
-    // 1) Sticky Bomb (ระเบิดแช่ซ้ำช่องเดิม >= 2 ครั้ง)
-    if (bombs.length >= 2 && bombs[bombs.length - 1] == bombs[bombs.length - 2]) {
-      stickyBombCol = bombs.last;
-      antiClusterScores[stickyBombCol] = 0.15; // กดคะแนนช่องระเบิดแช่เหลือ 15%
-      for (final c in columns) {
-        if (c != stickyBombCol) {
-          antiClusterScores[c] = 2.0; // ดันอีก 2 ช่องที่เหลือเป็นช่องปลอดภัย
-        }
-      }
-      debugPrint('[GOLDEN HIGHWAY 💎] [${mode.displayName}] ตรวจพบระเบิดแช่ที่ช่อง $stickyBombCol! กดคะแนนเหลือ 0.15 ดัน 2 ช่องปลอดภัยขึ้น 2.0x');
-    }
-
-    // 2) Ping-Pong Alternating Bomb (ระเบิดสลับ A-B-A หรือ B-C-B)
-    if (bombs.length >= 3 &&
-        bombs[bombs.length - 3] == bombs[bombs.length - 1] &&
-        bombs[bombs.length - 2] != bombs[bombs.length - 1]) {
-      pingPongB0 = bombs[bombs.length - 3];
-      pingPongB1 = bombs[bombs.length - 2];
-      // ช่องที่ 3 ที่ไม่มีระเบิดเลยในรอบ 3 ตาล่าสุดคือ "Golden Highway (ทางด่วนเพชร)"
-      final untouched = columns.where((c) => c != pingPongB0 && c != pingPongB1).toList();
-      if (untouched.isNotEmpty) {
-        goldenHighwayCol = untouched.first;
-        antiClusterScores[goldenHighwayCol] = 3.5; // Boost ทางด่วนเพชร 3.5x!
-        antiClusterScores[pingPongB1] = 0.35; // คาดการณ์ว่าระเบิดตาถัดไปจะสลับกลับมาช่องนี้
-        antiClusterScores[pingPongB0] = 0.40;
-        debugPrint(
-          '[GOLDEN HIGHWAY 💎] [${mode.displayName}] ตรวจพบระเบิดสลับ $pingPongB0 <-> $pingPongB1! ทางด่วนเพชรคือช่อง $goldenHighwayCol (Boost 3.5x)!',
-        );
-      }
-    } else if (bombs.length >= 3) {
-      // 3) Cyclic Bomb Detector (ระเบิดวน A -> B -> C)
+    if (bombs.length >= 3) {
       final b0 = bombs[bombs.length - 3];
       final b1 = bombs[bombs.length - 2];
       final b2 = bombs[bombs.length - 1];
-      if (b0 != b1 && b1 != b2 && b0 != b2) {
-        // วนครบ 3 ช่อง ตาถัดไปตามไซเคิลมีโอกาสวนกลับมาที่ b0
-        antiClusterScores[b0] = (antiClusterScores[b0] ?? 1.0) * 0.30;
-        debugPrint('[CYCLIC BOMB DODGE 🔄] [${mode.displayName}] ตรวจพบระเบิดวน $b0 -> $b1 -> $b2! ลดคะแนนช่องถัดไป ($b0) เหลือ 30%');
+
+      // Ping-Pong: A -> B -> A
+      if (b0 == b2 && b0 != b1) {
+        pingPongB0 = b0;
+        pingPongB1 = b1;
+        bombRisk[b1] = (bombRisk[b1] ?? 0.33) + 2.5;
+        final untouched = columns.where((c) => c != b0 && c != b1).first;
+        bombRisk[untouched] = (bombRisk[untouched] ?? 0.33) * 0.1;
+        goldenHighwayCol = untouched;
+        antiClusterScores[goldenHighwayCol] = 4.0;
+        antiClusterScores[b1] = 0.10;
+        antiClusterScores[b0] = 1.8;
       }
+      // Cyclic: 3 distinct columns
+      else if (b0 != b1 && b1 != b2 && b0 != b2) {
+        bombRisk[b0] = (bombRisk[b0] ?? 0.33) + 2.0;
+        bombRisk[b2] = (bombRisk[b2] ?? 0.33) * 0.2;
+        antiClusterScores[b0] = 0.10;
+        antiClusterScores[b2] = 2.5;
+        antiClusterScores[b1] = 2.0;
+      }
+      // Sticky: A -> A
+      else if (b1 == b2) {
+        stickyBombCol = b2;
+        bombRisk[b2] = (bombRisk[b2] ?? 0.33) + 2.0;
+        antiClusterScores[b2] = 0.10;
+        for (final c in columns) {
+          if (c != b2) antiClusterScores[c] = 2.5;
+        }
+      }
+    } else if (bombs.length >= 2) {
+      final b1 = bombs[bombs.length - 2];
+      final b2 = bombs[bombs.length - 1];
+      if (b1 == b2) {
+        stickyBombCol = b2;
+        bombRisk[b2] = (bombRisk[b2] ?? 0.33) + 2.0;
+        antiClusterScores[b2] = 0.10;
+        for (final c in columns) {
+          if (c != b2) antiClusterScores[c] = 2.5;
+        }
+      }
+    }
+
+    // ─── 2. MARKOV BOMB TRANSITION (Order 1) ───
+    final Map<String, double> markovScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
+    if (bombs.length >= 2) {
+      final lastBomb = bombs.last;
+      final Map<String, double> bombTransitions = {'A': 0.1, 'B': 0.1, 'C': 0.1};
+      for (int i = 0; i < bombs.length - 1; i++) {
+        if (bombs[i] == lastBomb) {
+          final nextB = bombs[i + 1];
+          bombTransitions[nextB] = (bombTransitions[nextB] ?? 0.1) + 1.0;
+        }
+      }
+      final double totalTrans = bombTransitions.values.fold(0.0, (a, b) => a + b);
+      for (final c in columns) {
+        final double pBombTrans = (bombTransitions[c] ?? 0.1) / totalTrans;
+        bombRisk[c] = (bombRisk[c] ?? 0.33) + pBombTrans * 1.5;
+        markovScores[c] = (1.0 - pBombTrans) * 1.5;
+      }
+    }
+
+    // ─── 3. N-GRAM PATTERN MATCHER (Order 2) ───
+    final Map<String, double> ngramScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
+    if (bombs.length >= 3) {
+      final b1 = bombs[bombs.length - 2];
+      final b2 = bombs[bombs.length - 1];
+      final Map<String, double> ngramCounts = {'A': 0.05, 'B': 0.05, 'C': 0.05};
+      for (int i = 0; i < bombs.length - 2; i++) {
+        if (bombs[i] == b1 && bombs[i + 1] == b2) {
+          final nextB = bombs[i + 2];
+          ngramCounts[nextB] = (ngramCounts[nextB] ?? 0.05) + 1.0;
+        }
+      }
+      final double totalNg = ngramCounts.values.fold(0.0, (a, b) => a + b);
+      if (totalNg > 0.3) {
+        for (final c in columns) {
+          final double pNgBomb = (ngramCounts[c] ?? 0.05) / totalNg;
+          bombRisk[c] = (bombRisk[c] ?? 0.33) + pNgBomb * 2.0;
+          ngramScores[c] = (1.0 - pNgBomb) * 1.8;
+        }
+      }
+    }
+
+    // ─── 4. RECENCY EXPONENTIAL DECAY ───
+    final Map<String, double> recencyScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
+    final int recentBombWindow = min(10, bombs.length);
+    if (recentBombWindow > 0) {
+      final recentBombs = bombs.sublist(bombs.length - recentBombWindow);
+      for (int i = 0; i < recentBombs.length; i++) {
+        final b = recentBombs[i];
+        final double decay = pow(0.85, recentBombs.length - 1 - i).toDouble();
+        recencyScores[b] = (recencyScores[b] ?? 1.0) * (1.0 - 0.15 * decay);
+      }
+    }
+
+    // Normalize bombRisk
+    final double totalBombRisk = bombRisk.values.fold(0.0, (a, b) => a + b);
+    final Map<String, double> normBombProb = {};
+    for (final c in columns) {
+      normBombProb[c] = (bombRisk[c] ?? 0.33) / (totalBombRisk > 0 ? totalBombRisk : 1.0);
+    }
+
+    // Base scores from Bayesian safe probability: S(c) = (1.0 - P(Bomb=c))
+    final Map<String, double> scores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
+    for (final c in columns) {
+      final pSafe = (1.0 - (normBombProb[c] ?? 0.33)).clamp(0.05, 0.95);
+      scores[c] = pow(pSafe / 0.333, 2.0).toDouble();
     }
 
     // 🧠 Save current submodel scores for post-mortem analysis:
@@ -752,31 +772,25 @@ class OmniMatrixEngine {
       () => {'markov': 1.0, 'ngram': 1.0, 'recency': 1.0, 'antiCluster': 1.0},
     );
 
-    // Combine all sub-model weights into the composite score with dynamic adaptive weighting:
+    // Apply adaptive submodel weights softly
     for (final c in columns) {
-      final mScore = 1.0 + ((markovScores[c] ?? 1.0) - 1.0) * (weights['markov'] ?? 1.0);
-      final ngScore = 1.0 + ((ngramScores[c] ?? 1.0) - 1.0) * (weights['ngram'] ?? 1.0);
-      final recScore = 1.0 + ((recencyScores[c] ?? 1.0) - 1.0) * (weights['recency'] ?? 1.0);
-      final acScore = 1.0 + ((antiClusterScores[c] ?? 1.0) - 1.0) * (weights['antiCluster'] ?? 1.0);
-
-      scores[c] = mScore.clamp(0.1, 5.0) *
-                  ngScore.clamp(0.1, 5.0) *
-                  recScore.clamp(0.1, 5.0) *
-                  acScore.clamp(0.1, 5.0);
+      final double weightAdj = ((weights['markov'] ?? 1.0) * (markovScores[c] ?? 1.0) +
+                                (weights['ngram'] ?? 1.0) * (ngramScores[c] ?? 1.0) +
+                                (weights['antiCluster'] ?? 1.0) * (antiClusterScores[c] ?? 1.0)) / 3.0;
+      scores[c] = (scores[c] ?? 1.0) * weightAdj.clamp(0.2, 3.0);
     }
 
-    // ─── 6. 🛡️ เสาหลักที่ 2: Soft Risk Penalty (ห้ามแบนช่องเด็ดขาด!) ───
+    // ─── 5. 🛡️ Soft Risk Penalty (ห้ามแบนช่องเด็ดขาด!) ───
     final int anchorLossCount = _consecutiveLossesOnAnchorByMode[mode] ?? 0;
     final currentAnchor = _activeAnchorColumnByMode[mode];
 
-    // คำสั่งผู้ใช้: "ต้องมีตัวเลือกอย่างน้อย 3 ช่องเสมอ (Never Force Single Column)"
-    // ห้ามเซ็ต score = 0.0 หรือตัดช่องใดช่องหนึ่งออกเด็ดขาด ทุกช่อง [A, B, C] ต้องมีสิทธิ์ถูกเลือกเสมอ!
-    // ช่องที่เพิ่งแพ้จะถูกลดค่าน้ำหนักลง (Soft Penalty) แต่ยังคงเป็นตัวเลือก เพื่อไม่ให้คาสิโนดักทางได้
     if (lastLoss != null && scores.containsKey(lastLoss)) {
-      scores[lastLoss] = (scores[lastLoss] ?? 1.0) * 0.25;
-      debugPrint(
-        '[SOFT PENALTY 🛡️] [${mode.displayName}] ช่อง $lastLoss เพิ่งแพ้ -> ลดค่าน้ำหนักลงเหลือ 25% (ไม่แบน! ยังคงสิทธิ์เลือกครบ 3 ช่องตามคำสั่งผู้ใช้)',
-      );
+      if ((normBombProb[lastLoss] ?? 0.33) >= 0.25) {
+        scores[lastLoss] = (scores[lastLoss] ?? 1.0) * 0.25;
+        debugPrint(
+          '[SOFT PENALTY 🛡️] [${mode.displayName}] ช่อง $lastLoss เพิ่งแพ้ & เสี่ยงระเบิด -> ลดค่าน้ำหนักเหลือ 25%',
+        );
+      }
     }
 
     // 🚨 กฎเหล็ก: ช่องที่แพ้ซ้ำใน streak ให้ลดน้ำหนักเพิ่มอีก แต่ห้ามตัดเหลือ 0
@@ -789,87 +803,73 @@ class OmniMatrixEngine {
         }
         if (consecutiveLoss >= 2 && scores.containsKey(c)) {
           scores[c] = (scores[c] ?? 1.0) * 0.20;
-          debugPrint(
-            '[NATURAL PURE STATS ${mode.displayName}] 🚨 ช่อง $c แพ้ซ้ำ $consecutiveLoss ครั้งใน streak -> ลดน้ำหนักเหลือ 20% (คงสิทธิ์ครบ 3 ช่อง)',
-          );
         }
       }
     }
 
-    // 🚀 ANTI-CONSECUTIVE-LOSS DEFENSE MATRIX (คำสั่งผู้ใช้: อัปเกรดเพื่อป้องกันการแพ้ > 3 ตาติด):
+    // 🚀 ANTI-CONSECUTIVE-LOSS DEFENSE MATRIX:
     // 1. เมื่อแพ้ติดกัน 2 ตา (Streak == 2):
     if (streak == 2 && picks.length >= 2) {
       final p1 = picks[picks.length - 2];
       final p2 = picks[picks.length - 1];
       if (p1 != p2) {
-        // โดนระเบิดที่ 2 ช่องต่างกัน (เช่น A แล้ว B) -> ช่องที่ 3 (C) คือ Golden Safe Haven บริสุทธิ์
         final untouched = columns.where((c) => c != p1 && c != p2).toList();
         if (untouched.isNotEmpty) {
           final safeCol = untouched.first;
-          scores[safeCol] = (scores[safeCol] ?? 1.0) * 3.5;
-          scores[p1] = 0.15;
-          scores[p2] = 0.15;
-          debugPrint('[DIVERSITY ESCAPE 🚀] [${mode.displayName}] Streak 2 โดนระเบิดที่ $p1, $p2 -> บูสต์ช่องปลอดภัยบริสุทธิ์ $safeCol x3.5!');
+          final bool isSafeColBombTarget = (normBombProb[safeCol] ?? 0.33) >= 0.35;
+          if (!isSafeColBombTarget) {
+            scores[safeCol] = (scores[safeCol] ?? 1.0) * 3.5;
+            scores[p1] = 0.15;
+            scores[p2] = 0.15;
+            debugPrint('[DIVERSITY ESCAPE 🚀] [${mode.displayName}] Streak 2 -> บูสต์ช่องปลอดภัย $safeCol x3.5!');
+          } else {
+            // safeCol เป็นเป้าหมายระเบิด สลับไปเลือก p2 ที่เพิ่งระเบิดไป
+            scores[p2] = (scores[p2] ?? 1.0) * 3.5;
+            scores[safeCol] = 0.10;
+            scores[p1] = 0.15;
+            debugPrint('[DIVERSITY ESCAPE 🛡️ ANTI-CYCLIC] [${mode.displayName}] ตรวจพบว่า $safeCol เสี่ยงระเบิด -> สลับไปเลือก $p2 x3.5!');
+          }
         }
       } else {
-        // Sticky Bomb โดนช่องเดิมซ้ำ 2 ครั้ง (เช่น A แล้ว A)
         scores[p1] = 0.10;
         for (final c in columns) {
           if (c != p1) scores[c] = (scores[c] ?? 1.0) * 2.5;
         }
-        debugPrint('[STICKY DODGE 🛡️] [${mode.displayName}] Streak 2 โดนระเบิดซ้ำช่องเดิม ($p1) 2 ครั้ง -> บูสต์อีก 2 ช่อง x2.5!');
       }
     }
 
     // 2. เมื่อแพ้ติดกัน 3 ตาขึ้นไป (Streak >= 3): CRITICAL ANTI-STREAK-4 HYPER SHIELD 🛡️
-    // ตาที่ 3 เป็นจุดชี้ขาดสำคัญที่สุด! ถ้าแพ้อีกตาจะกลายเป็นการแพ้ 4 ตาติด (> 3 ตาติด) ซึ่งต้องป้องกันอย่างเด็ดขาด!
     if (streak >= 3 && picks.length >= 3) {
       final p1 = picks[picks.length - 3];
       final p2 = picks[picks.length - 2];
       final p3 = picks[picks.length - 1];
 
-      // Pattern A: Cyclic Bomb (ระเบิดวนครบ 3 ช่องต่างกัน เช่น A -> B -> C)
       if (p1 != p2 && p2 != p3 && p1 != p3) {
-        // ในระบบ PRNG แบบ 3 ช่อง การออกวน A -> B -> C มีแนวโน้มสูงมากที่ระเบิดจะวนลูปกลับมาที่ p1 (A)
-        // ดังนั้น p1 คือจุดอันตรายที่สุด! และ p3 เพิ่งระเบิดไปเมื่อกี้
-        // ช่องที่ปลอดภัยที่สุดในไซเคิลคือ p2 (เพราะระเบิดไปเมื่อ 2 ตาก่อน และไม่อยู่ในจุดวนลูป)
-        scores[p1] = 0.05; // กำจัดจุดวนลูป
-        scores[p3] = 0.15; // กดช่องที่เพิ่งระเบิด
-        scores[p2] = (scores[p2] ?? 1.0) * 4.5; // บูสต์ p2 สูงสุด 4.5x!
-        debugPrint('[ANTI-STREAK-4 🛡️ CYCLIC] [${mode.displayName}] ตรวจพบระเบิดวน $p1->$p2->$p3! ป้องกันการวนกลับ $p1 -> ล็อกเป้าช่องปลอดภัย $p2 (Boost 4.5x)!');
-      }
-      // Pattern B: Ping-Pong Alternating (ระเบิดสลับ เช่น A -> B -> A)
-      else if (p1 == p3 && p1 != p2) {
-        // ระเบิดสลับระหว่าง p1 กับ p2 -> ตาถัดไปตามจังหวะจะสลับไปที่ p2!
-        // ช่องที่ 3 ไม่เคยโดนระเบิดเลยใน 3 ตาล่าสุด คือ Golden Highway 100%!
+        scores[p1] = 0.05;
+        scores[p3] = 0.15;
+        scores[p2] = (scores[p2] ?? 1.0) * 4.5;
+      } else if (p1 == p3 && p1 != p2) {
         final untouched = columns.where((c) => c != p1 && c != p2).toList();
         if (untouched.isNotEmpty) {
           final safeCol = untouched.first;
-          scores[p2] = 0.05; // คาดว่าระเบิดจะสลับไป p2
+          scores[p2] = 0.05;
           scores[p1] = 0.15;
-          scores[safeCol] = (scores[safeCol] ?? 1.0) * 5.0; // บูสต์ 5.0x!
-          debugPrint('[ANTI-STREAK-4 🛡️ PING-PONG] [${mode.displayName}] ตรวจพบระเบิดสลับ $p1<->$p2! ทางด่วนเพชรคือ $safeCol (Boost 5.0x)!');
+          scores[safeCol] = (scores[safeCol] ?? 1.0) * 5.0;
         }
-      }
-      // Pattern C: Cluster / Repeated (ระเบิดเกาะกลุ่ม เช่น A -> B -> B หรือ B -> A -> A)
-      else if (p2 == p3 && p1 != p2) {
+      } else if (p2 == p3 && p1 != p2) {
         final untouched = columns.where((c) => c != p1 && c != p2).toList();
         if (untouched.isNotEmpty) {
           final safeCol = untouched.first;
           scores[p3] = 0.05;
           scores[p1] = 0.15;
           scores[safeCol] = (scores[safeCol] ?? 1.0) * 4.5;
-          debugPrint('[ANTI-STREAK-4 🛡️ CLUSTER] [${mode.displayName}] ตรวจพบระเบิดแช่ที่ $p3! ทางด่วนคือ $safeCol (Boost 4.5x)!');
         }
-      }
-      // Pattern D: Triple-Sticky (ระเบิดแช่ 3 ครั้งติด เช่น A -> A -> A)
-      else if (p1 == p2 && p2 == p3) {
+      } else if (p1 == p2 && p2 == p3) {
         scores[p1] = 0.05;
         final otherCols = columns.where((c) => c != p1).toList();
         for (final oc in otherCols) {
           scores[oc] = (scores[oc] ?? 1.0) * 3.5;
         }
-        debugPrint('[ANTI-STREAK-4 🛡️ TRIPLE-STICKY] [${mode.displayName}] ระเบิดแช่ที่ $p1 3 ครั้งติด! ตัด $p1 ทิ้งและบูสต์อีก 2 ช่อง 3.5x!');
       }
     }
 

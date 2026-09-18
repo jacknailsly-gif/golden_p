@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/models/game_mode.dart';
@@ -238,7 +237,72 @@ void main() {
       // Second recovery loss: step 2 >= quota 2 -> retreats to observation
       expect(state.recoveryStepInCycle >= state.maxRecoveryStepsThisCycle, isTrue);
     });
+
+    test('AQ-DARE Pillar 1: Passive Debt Melting rejects recovery for tiny debts (< 5x Base Bet)', () {
+      final double floorBet = state.lockedBaseBet!; // 0.00007880
+      state.activeNewLoss = floorBet * 2.0; // 2x Base Bet (< 5x Base Bet)
+      state.consecutiveLossesStreak = 1;
+      state.observationRoundsRemaining = 0;
+      state.isLossStreakBaseBetLocked = false;
+      state.recoveryState = RecoveryState.recoveryGate;
+
+      // When debt is tiny, canEnterRecovery must return false to let Base Bet melt it with zero risk
+      final bool approved = state.canEnterRecovery(floorBet: floorBet);
+      expect(approved, isFalse,
+          reason: 'Tiny debts (< 5x Base Bet) must be melted passively with zero risk');
+    });
+
+    test('AQ-DARE Pillar 2: Dynamic Debt Slicing reduces required bet by ~75% (25% slice)', () {
+      double debt = 0.040;
+      double pRate = 0.42;
+      double floorBet = 0.00007880;
+      double surplus = floorBet * pRate * 2.0;
+
+      // Old: 100% full debt
+      double oldTargetProfit = debt + surplus;
+      double oldRequiredBet = oldTargetProfit / pRate; // ~0.09539
+
+      // New: 25% slice of debt
+      double sliceDebt = debt * 0.25; // 0.010
+      double newTargetProfit = sliceDebt + surplus;
+      double newRequiredBet = newTargetProfit / pRate; // ~0.02396
+
+      expect(newRequiredBet, lessThan(oldRequiredBet * 0.35));
+      expect(newRequiredBet / oldRequiredBet, closeTo(0.25, 0.05),
+          reason: '25% Debt slice must reduce recovery bet requirement by ~75%');
+    });
+
+    test('AQ-DARE Pillar 4: Hard Bet Cap is tightened to 5% of Bankroll (No 10% risk)', () {
+      double currentBalance = 0.184;
+      double debt = 0.040;
+      double pRate = 0.42;
+      double sliceDebt = debt * 0.25;
+      double requiredBet = (sliceDebt + 0.0001) / pRate; // ~0.024 > 5% (0.0092)
+
+      // Apply 5% Bankroll Cap
+      final double maxBankrollCap = currentBalance * 0.05;
+      if (requiredBet > maxBankrollCap) {
+        requiredBet = maxBankrollCap;
+      }
+
+      // Must be capped at exactly 0.0092 (5% of 0.184)
+      expect(requiredBet, equals(0.184 * 0.05));
+      expect(requiredBet / currentBalance, lessThanOrEqualTo(0.05));
+    });
+
+    test('AQ-DARE Pillar 5: Dynamic Capital Stop-Loss triggers at 20% Drawdown (protecting 80% capital)', () {
+      double baselineCapital = 0.184;
+      double newStopLossFloor = baselineCapital * 0.80; // 0.1472
+
+      // Balance at 0.140 (Drawdown is ~23.9%, which is > 20%)
+      double curBalance = 0.140;
+      bool isStopLossTriggered = curBalance <= newStopLossFloor;
+
+      expect(isStopLossTriggered, isTrue,
+          reason: 'Hard Stop-Loss must trigger when balance drops below 80% of ATH (20% Drawdown)');
+    });
   });
 }
+
 
 

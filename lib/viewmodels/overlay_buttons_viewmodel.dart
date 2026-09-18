@@ -240,7 +240,7 @@ class GameModeSessionState {
   ///  ถ้ารอบ 1 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
   ///  ถ้ารอบ 2 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
   ///  ถ้ารอบ 3 แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก"
-  bool canEnterRecovery({OmniPredictionResult? omniResult}) {
+  bool canEnterRecovery({OmniPredictionResult? omniResult, double? floorBet}) {
     const double debtEpsilon = 0.00000001;
 
     // 1. CIRCUIT BREAKER (Priority 1)
@@ -258,6 +258,14 @@ class GameModeSessionState {
       return false;
     }
 
+    // 🎯 AQ-DARE PILLAR 1: PASSIVE DEBT MELTING
+    // หนี้ขนาดเล็กมาก (< 5x Base Bet) ไม่คุ้มค่าความเสี่ยงที่จะออกไม้ทวงหนี้ขนาดใหญ่
+    // ปล่อยให้ Base Bet เดินตามปกติและเอากำไรมาละลายหนี้ทิ้งแบบ 0% Risk to Principal
+    final double? effectiveFloor = floorBet ?? lockedBaseBet;
+    if (effectiveFloor != null && effectiveFloor > 0 && totalAccumulatedLoss < effectiveFloor * 5.0) {
+      return false;
+    }
+
     // 4. OBSERVATION LOCK (Priority 4) - ต้องผ่านช่วงดูเชิง 15-25 ตา ให้ครบก่อน
     if (observationRoundsRemaining > 0 || isLossStreakBaseBetLocked || recoveryState == RecoveryState.observation) {
       return false;
@@ -268,11 +276,22 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. SELECTIVE RECOVERY GATE (Priority 5) - ระบบทายคัดกรอง Sniper Recovery
-    // หากสภาวะตลาดมีความผันผวนสูงมาก (Chaos > 0.70) หรือ OmniMatrix ส่งสัญญาณ Hold Fire
-    // ให้ชะลอการทวง เดิน Base Bet ดูเชิงก่อน ไม่เสี่ยงทวงหนี้ในจังหวะสับขาหลอก
+    // 6. AQ-DARE PILLAR 3: PURE EDGE SNIPER GATE (Priority 5)
+    // ระบบทายคัดกรอง Sniper Recovery ขั้นสูงสุด:
+    // ห้ามทวงหาก:
+    // - OmniMatrix ส่งสัญญาณ Hold Fire
+    // - ความผันผวน Chaos >= 0.50 (ลดจาก 0.70 เพื่อความคมชัดสูงสุด)
+    // - ค่าความมั่นใจต่ำกว่า 75%
+    // - Mathematical Edge ต่ำกว่า +5% (edge < 0.05)
     if (omniResult != null) {
-      if (omniResult.recoveryClearance == RecoveryClearance.holdFire || omniResult.chaosIndex > 0.70) {
+      final double normalizedConf = omniResult.confidence <= 1.0
+          ? omniResult.confidence * 100.0
+          : omniResult.confidence;
+
+      if (omniResult.recoveryClearance == RecoveryClearance.holdFire ||
+          omniResult.chaosIndex >= 0.50 ||
+          normalizedConf < 75.0 ||
+          omniResult.mathematicalEdge < 0.05) {
         return false;
       }
     }
@@ -521,8 +540,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
   int get consecutiveBaseBetWins => getState(_activeGameMode).consecutiveBaseBetWins;
   int get consecutiveBaseBetWinsRequiredForRecovery => getState(_activeGameMode).consecutiveBaseBetWinsRequiredForRecovery;
   double get recoverySliceFraction => getState(_activeGameMode).recoverySliceFraction;
-  bool canEnterRecovery(GameMode mode, {OmniPredictionResult? omniResult}) =>
-      getState(mode).canEnterRecovery(omniResult: omniResult);
+  bool canEnterRecovery(GameMode mode, {OmniPredictionResult? omniResult, double? floorBet}) =>
+      getState(mode).canEnterRecovery(omniResult: omniResult, floorBet: floorBet);
 
   void transitionRecoveryState(GameMode mode, RecoveryState newState, {String reason = ''}) {
     final state = getState(mode);
@@ -1346,7 +1365,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
       return true;
     }
 
-    final double hardStopLossFloor = baselineCapital * 0.70;
+    // 🎯 AQ-DARE PILLAR 5: DYNAMIC CAPITAL STOP-LOSS (20% Max Drawdown Floor)
+    // ล็อกเพดาน Drawdown ไม่เกิน 20% จากยอดสูงสุด (ATH) เพื่อการันตีรักษา 80% ของพอร์ตไว้เสมอ
+    final double hardStopLossFloor = baselineCapital * 0.80;
     if (curBalance <= hardStopLossFloor) {
       final double drawdownPct = ((baselineCapital - curBalance) / baselineCapital) * 100.0;
       _stopReason =
@@ -1635,12 +1656,16 @@ class OverlayButtonsViewModel with ChangeNotifier {
         }
       }
 
-      // 🎯 Centralized Recovery Gate:
-      // Preliminary check for OmniMatrix input (isRecoveryRound):
-      final bool isEligibleForRecovery = canEnterRecovery(mode);
-
       // 🧠 ระบบทายของสมอง AI (User Directive: "ให้ใช้ระบบทายของ สมอง AI"):
       final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
+      final roundCoin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(mode);
+      final double roundFloor = getFloorBetForMode(mode, coinType: roundCoin);
+      final double currentFloorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[mode] ?? roundFloor;
+
+      // 🎯 Centralized Recovery Gate:
+      // Preliminary check for OmniMatrix input (isRecoveryRound):
+      final bool isEligibleForRecovery = canEnterRecovery(mode, floorBet: currentFloorBet);
+
       String? aiBrainPrediction = analyzer?.lastPredictedChar;
 
       // 🧠 คำนวณ OmniMatrix Prediction & Confidence
@@ -1667,7 +1692,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
       }
 
       // 🎯 Final Authoritative Recovery Approval via Safety Gate:
-      bool approvedForRecovery = canEnterRecovery(mode, omniResult: omniResult);
+      bool approvedForRecovery = canEnterRecovery(mode, omniResult: omniResult, floorBet: currentFloorBet);
 
       // 🛑 ABSOLUTE CEILING GUARD: แพ้ครบ 3 ตา หรืออยู่ในช่วงดูเชิง 15-25 ตา ห้ามทวงเด็ดขาด 100%!
       if (state.consecutiveLossesStreak >= 3 ||
@@ -1692,20 +1717,23 @@ class OverlayButtonsViewModel with ChangeNotifier {
           mode: mode,
         );
       } else {
-        if (state.totalAccumulatedLoss > 0.00000001 &&
-            (omniResult.recoveryClearance == RecoveryClearance.holdFire || omniResult.chaosIndex > 0.70)) {
-          debugPrint(
-            '🎯 [SNIPER RECOVERY 🛡️] [${mode.displayName}] OmniMatrix สั่ง Hold Fire (Chaos: ${omniResult.chaosIndex.toStringAsFixed(2)}, Regime: ${omniResult.marketRegime}) -> ชะลอไม้ทวง เดิน Base Bet สอดแนมก่อน',
-          );
+        if (state.totalAccumulatedLoss > 0.00000001) {
+          final double normalizedConf = omniResult.confidence <= 1.0
+              ? omniResult.confidence * 100.0
+              : omniResult.confidence;
+          if (omniResult.recoveryClearance == RecoveryClearance.holdFire ||
+              omniResult.chaosIndex >= 0.50 ||
+              normalizedConf < 75.0 ||
+              omniResult.mathematicalEdge < 0.05) {
+            debugPrint(
+              '🎯 [AQ-DARE SNIPER RECOVERY 🛡️] [${mode.displayName}] Filter Blocked (Chaos: ${omniResult.chaosIndex.toStringAsFixed(2)}, Conf: ${normalizedConf.toStringAsFixed(1)}%, Edge: ${omniResult.mathematicalEdge.toStringAsFixed(2)}, Regime: ${omniResult.marketRegime}) -> ชะลอไม้ทวง เดิน Base Bet สอดแนมก่อน',
+            );
+          }
         }
         // 🎯 ชนะแล้วจะไม่ทวงหนี้เด็ดขาด / ไม่มีหนี้สะสม / แพ้ครบ 3 ตา (เข้าโหมดสังเกตการณ์ 15-20 ตา นับจากรอบแพ้สุดท้าย): โหมดสะสมกำไร (Profit Engine) เดิน Base Bet ปกติ
         state.tier1RecoveryIndex = 0;
         state.tier2RecoveryIndex = 0;
         state.isCurrentlyRecoveryRound = false;
-
-        final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(mode);
-        final double defaultFloor = getFloorBetForMode(mode, coinType: coin);
-        final double floorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[mode] ?? defaultFloor;
 
         // 🎯 คำสั่งผู้ใช้: "เมื่อชนะ ในหน้า Tower ให้เดิน Base Bet นิ่งๆ คงที่เสมอ ห้ามสลับยอดไปมา"
         await _ensureBaseBet(runToken, mode: mode);
@@ -3514,10 +3542,17 @@ class OverlayButtonsViewModel with ChangeNotifier {
     // รอบที่ 1: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 2: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 3: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก
-    final double debtToEscalate = totalDebt;
+    // 🎯 AQ-DARE PILLAR 2: DYNAMIC DEBT SLICING (25% per slice = 4 slices)
+    // แบ่งทวงทีละ 25% ของหนี้สะสม เพื่อลดภาระ Recovery Bet ลงถึง ~75%
+    // ป้องกันการ All-in หรือเบทก้อนโตที่สุ่มเสี่ยงต่อ Drawdown ลึก
+    double sliceDebt = totalDebt * 0.25;
+    if (sliceDebt < floorBet) {
+      sliceDebt = totalDebt; // หาก 25% ต่ำกว่า Floor Bet ให้ทวงตามหนี้จริง
+    }
+    final double debtToEscalate = sliceDebt;
 
     debugPrint(
-      '🎯 [DEBT SIZING ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้รอบนี้: ${debtToEscalate.toStringAsFixed(8)} (ทวงเต็ม 100% Full Recovery จากหนี้รวม: ${totalDebt.toStringAsFixed(8)})',
+      '🎯 [AQ-DARE DEBT SLICING ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้รอบนี้: ${debtToEscalate.toStringAsFixed(8)} (แบ่งทวง 25% Slice จากหนี้รวม: ${totalDebt.toStringAsFixed(8)})',
     );
 
     // 🎯 คำสั่งผู้ใช้ (/grill-me Lean & Safe Recovery Bet Sizing):
@@ -3526,7 +3561,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final double baseSurplus = floorBet * pRate * 2.0;
     final double surplusProfitMargin = baseSurplus;
     debugPrint(
-      '🛡️ [LEAN RECOVERY SIZING 💎] [${targetMode.displayName}] Debt: ${debtToEscalate.toStringAsFixed(8)} + Surplus(2x Base): ${baseSurplus.toStringAsFixed(8)} -> Target Profit: ${(debtToEscalate + surplusProfitMargin).toStringAsFixed(8)}',
+      '🛡️ [LEAN RECOVERY SIZING 💎] [${targetMode.displayName}] Debt Slice: ${debtToEscalate.toStringAsFixed(8)} + Surplus(2x Base): ${baseSurplus.toStringAsFixed(8)} -> Target Profit: ${(debtToEscalate + surplusProfitMargin).toStringAsFixed(8)}',
     );
 
     double targetProfit = debtToEscalate + surplusProfitMargin;
@@ -3536,9 +3571,6 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = minRecoveryBet;
     }
 
-    // 🎯 คำสั่งผู้ใช้: "ทวงเต็ม 100%"
-    // ภายใต้ SHIELD 1: Hard Bankroll Safety Cap สูงสุดไม่เกิน 10% ของยอดเงินในกระเป๋า (Absolute 15%)
-    // ห้ามทุ่มหมดตัว (All-in) เด็ดขาด 100%!
     state.remainingRecoverySlices = 0;
 
     const double casinoHardLimit = 3000.0;
@@ -3549,14 +3581,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = casinoHardLimit;
     }
 
-    // 🛡️ SHIELD 1: HARD RECOVERY BET CAP (Max 10% of Bankroll, Absolute Cap 15%)
-    // ห้าม All-in เด็ดขาด 100%! ไม่ว่าจะมีหนี้สะสมเท่าไหร่ก็ตาม เบททวงต้องไม่เกิน 10% ของยอดเงินในกระเป๋า
+    // 🛡️ AQ-DARE PILLAR 4: HALF-KELLY BET SIZING (Max 5% of Bankroll Cap, Absolute Cap 7%)
+    // ห้าม All-in เด็ดขาด 100%! ไม่ว่าจะมีหนี้สะสมเท่าไหร่ก็ตาม เบททวงต้องไม่เกิน 5% ของยอดเงินในกระเป๋า
     // หากหนี้สูงเกินไป ให้ผ่อนทวงหลายตา แทนที่จะทุ่มหมดตัวในตาเดียว
     if (currentBalance > 0.00000001) {
-      final double maxBankrollCap = currentBalance * 0.10;
+      final double maxBankrollCap = currentBalance * 0.05;
       if (requiredBet > maxBankrollCap) {
         debugPrint(
-          '🛡️ [SHIELD 1: HARD BET CAP] Required bet (${requiredBet.toStringAsFixed(8)}) exceeds 10% bankroll cap (${maxBankrollCap.toStringAsFixed(8)}). Capped to 10% of balance!',
+          '🛡️ [AQ-DARE PILLAR 4: 5% HARD BET CAP] Required bet (${requiredBet.toStringAsFixed(8)}) exceeds 5% bankroll cap (${maxBankrollCap.toStringAsFixed(8)}). Capped to 5% of balance!',
         );
         requiredBet = maxBankrollCap;
       }
@@ -3567,15 +3599,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = floorBet;
     }
 
-    // Absolute sanity ceiling: ห้ามเดิมพันเกิน 15% ของ balance เด็ดขาด
-    if (currentBalance > floorBet && requiredBet > currentBalance * 0.15) {
-      requiredBet = currentBalance * 0.15;
+    // Absolute sanity ceiling: ห้ามเดิมพันเกิน 7% ของ balance เด็ดขาด
+    if (currentBalance > floorBet && requiredBet > currentBalance * 0.07) {
+      requiredBet = currentBalance * 0.07;
     }
 
     requiredBet = double.parse(requiredBet.toStringAsFixed(8));
     state.currentBetAmount = requiredBet;
     debugPrint(
-      '🎯 [FULL RECOVERY 100% ⚡] [${targetMode.displayName}] ทวงเต็มหนี้ 100%: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
+      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | หนี้รอบนี้ (25%): ${debtToEscalate.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
     );
 
     // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ เพื่อให้แน่ใจว่าเว็บรับยอดทวงหนี้ 100% เต็ม

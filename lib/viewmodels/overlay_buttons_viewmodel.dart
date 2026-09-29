@@ -1644,7 +1644,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
       final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
       final roundCoin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(mode);
       final double roundFloor = getFloorBetForMode(mode, coinType: roundCoin);
-      final double currentFloorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[mode] ?? roundFloor;
+      // 🏆 Dynamic Base Bet System: คำนวณ Base bet แบบ Dynamic ตามยอดเงินจริง (Balance / 10000)
+      // และใช้ min Bet (roundFloor) เมื่อ Base bet น้อยกว่า min Bet เท่านั้น
+      final double calculatedDynamicBet = mode.calculateBaseBet(currentBalance, roundFloor, coin: roundCoin);
+      final double currentFloorBet = calculatedDynamicBet;
+      state.lockedBaseBet = currentFloorBet;
+      _lockedBaseBetByMode[mode] = currentFloorBet;
 
       // 🎯 Centralized Recovery Gate:
       // Preliminary check for OmniMatrix input (isRecoveryRound):
@@ -3337,12 +3342,6 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<double> _calculateDynamicBaseBet({GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
-    if (state.lockedBaseBet != null && state.lockedBaseBet! > 0.00000001) {
-      return state.lockedBaseBet!;
-    }
-    if (_lockedBaseBetByMode[targetMode] != null && _lockedBaseBetByMode[targetMode]! > 0.00000001) {
-      return _lockedBaseBetByMode[targetMode]!;
-    }
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
     final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(targetMode);
     final double defaultFloor = getFloorBetForMode(targetMode, coinType: coin);

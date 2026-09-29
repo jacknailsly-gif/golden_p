@@ -3522,17 +3522,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
     // รอบที่ 1: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 2: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 3: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก
-    // 🎯 AQ-DARE PILLAR 2: DYNAMIC DEBT SLICING (25% per slice = 4 slices)
-    // แบ่งทวงทีละ 25% ของหนี้สะสม เพื่อลดภาระ Recovery Bet ลงถึง ~75%
-    // ป้องกันการ All-in หรือเบทก้อนโตที่สุ่มเสี่ยงต่อ Drawdown ลึก
-    double sliceDebt = totalDebt * 0.25;
-    if (sliceDebt < floorBet) {
-      sliceDebt = totalDebt; // หาก 25% ต่ำกว่า Floor Bet ให้ทวงตามหนี้จริง
-    }
-    final double debtToEscalate = sliceDebt;
+    // 🎯 FULL DEBT RECOVERY: ทวงหนี้เต็ม 100% ต่อตา (ตามคำสั่งผู้ใช้)
+    // ป้องกัน All-in โดย PILLAR 4 (5% bankroll cap) และ Absolute ceiling (7%)
+    final double debtToEscalate = totalDebt;
 
     debugPrint(
-      '🎯 [AQ-DARE DEBT SLICING ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้รอบนี้: ${debtToEscalate.toStringAsFixed(8)} (แบ่งทวง 25% Slice จากหนี้รวม: ${totalDebt.toStringAsFixed(8)})',
+      '🎯 [FULL DEBT RECOVERY ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้เต็ม 100%: ${debtToEscalate.toStringAsFixed(8)}',
     );
 
     // 🎯 คำสั่งผู้ใช้ (/grill-me Lean & Safe Recovery Bet Sizing):
@@ -3587,7 +3582,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     requiredBet = double.parse(requiredBet.toStringAsFixed(8));
     state.currentBetAmount = requiredBet;
     debugPrint(
-      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | หนี้รอบนี้ (25%): ${debtToEscalate.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
+      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | ทวงเต็ม 100%: ${debtToEscalate.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
     );
 
     // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ เพื่อให้แน่ใจว่าเว็บรับยอดทวงหนี้ 100% เต็ม

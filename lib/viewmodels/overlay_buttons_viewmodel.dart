@@ -1488,6 +1488,22 @@ class OverlayButtonsViewModel with ChangeNotifier {
       state.activeCoinType = currentCoin;
     }
 
+    if (state.justWonRecoveryBet && state.sessionMaxBalance > 0.00000001 && settledBalance < state.sessionMaxBalance - 0.00000001) {
+      debugPrint('⏳ [SETTLEMENT WAIT] [${mode.displayName}] เพิ่งชนะไม้ทวงหนี้ แต่ยอดเงินยังไม่เข้า New High ใน DOM (เน็ตช้า) รอตรวจสอบซ้ำ...');
+      for (int w = 1; w <= 5; w++) {
+        await Future.delayed(const Duration(milliseconds: 600));
+        final double recheck = await _getBalanceDouble(mode: mode);
+        if (recheck > settledBalance + 0.00000001) {
+          settledBalance = recheck;
+          state.lastSettledBalance = settledBalance;
+          debugPrint('💰 [SETTLED] [${mode.displayName}] ยอดเงินเข้าแล้ว! (${settledBalance.toStringAsFixed(8)})');
+          if (settledBalance >= state.sessionMaxBalance) {
+            break;
+          }
+        }
+      }
+    }
+
     if (settledBalance > 0.00000001) {
       state.lastSettledBalance = settledBalance;
       state.sessionStartBalance ??= settledBalance;
@@ -1498,12 +1514,20 @@ class OverlayButtonsViewModel with ChangeNotifier {
       final double realDeficit = state.sessionMaxBalance - settledBalance;
       if (realDeficit > 0.00000001) {
         // 🎯 [PRE-M0 REAL DEBT AUDIT 🔍]
-        // ซิงค์หนี้เฉพาะเมื่ออยู่ในช่วงแพ้ (consecutiveLossesStreak > 0)
-        // และต้องไม่อยู่ในช่วงดูเชิง 15-25 ตา (observation) เพื่อป้องกันหนี้บวมพอง
-        if (state.consecutiveLossesStreak > 0 &&
-            state.observationRoundsRemaining == 0 &&
-            !state.isLossStreakBaseBetLocked) {
-          if (realDeficit > state.totalAccumulatedLoss + 0.00000001) {
+        // "มันต้องดู New High ไม่ใช่ดูแต่ชนะ/แพ้"
+        // ยอดเงินจริงต่ำกว่า New High: มีหนี้ขาดดุลจริงเสมอ! ห้ามลด sessionMaxBalance เด็ดขาด
+        if (state.totalAccumulatedLoss <= 0.00000001) {
+          // ถ้าหนี้ในบอทเป็น 0 แต่ยอดเงินจริงต่ำกว่า New High (เช่น ชนะแต่เงินยังไม่เข้า หรือหนี้หลุดตอนเน็ตช้า)
+          // ให้ซิงค์หนี้กลับมาตามยอดขาดดุลจริงจาก New High ทันที ป้องกันการลืมหนี้!
+          state.activeNewLoss = double.parse(realDeficit.toStringAsFixed(8));
+          debugPrint(
+            '🎯 [PRE-M0 REAL DEBT AUDIT 🔍] [${mode.displayName}] ตรวจพบยอดเงินจริง (${settledBalance.toStringAsFixed(8)}) ต่ำกว่า New High (${state.sessionMaxBalance.toStringAsFixed(8)}) '
+            'ขาดอีก: ${realDeficit.toStringAsFixed(8)} -> ซิงค์หนี้คงค้าง ${realDeficit.toStringAsFixed(8)} ทันที (ป้องกันบอทลืมหนี้ตอนเน็ตช้า)',
+          );
+        } else if (realDeficit > state.totalAccumulatedLoss + 0.00000001) {
+          if (state.consecutiveLossesStreak > 0 &&
+              state.observationRoundsRemaining == 0 &&
+              !state.isLossStreakBaseBetLocked) {
             final double deficitGap = double.parse((realDeficit - state.totalAccumulatedLoss).toStringAsFixed(8));
             // 🛡️ ป้องกันหนี้กระโดดบวมเกิน 10% ของยอดเงินในคราวเดียว
             final double maxSafeGap = settledBalance * 0.10;
@@ -1514,14 +1538,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
               '🎯 [PRE-M0 REAL DEBT AUDIT 🔍] [${mode.displayName}] ยอดเงินจริง (${settledBalance.toStringAsFixed(8)}) ต่ำกว่า High New (${state.sessionMaxBalance.toStringAsFixed(8)}) '
               'ขาดอีก: ${realDeficit.toStringAsFixed(8)} -> ซิงค์หนี้คงค้างเพิ่ม +${safeGap.toStringAsFixed(8)} (หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)}) โดยไม่ล้างตู้แช่แข็ง',
             );
-          } else if (state.totalAccumulatedLoss > realDeficit + 0.00000001) {
-            state.clampDebtToMax(realDeficit);
           }
-        } else {
-          // ชนะแล้ว หรืออยู่ที่ Base Bet: ถ้าหนี้เป็น 0 ให้ปรับ sessionMaxBalance สู่ยอดเงินจริงปัจจุบัน เพื่อไม่สร้างหนี้ทิพย์
-          if (state.totalAccumulatedLoss <= 0.00000001) {
-            state.sessionMaxBalance = settledBalance;
-          }
+        } else if (state.totalAccumulatedLoss > realDeficit + 0.00000001) {
+          state.clampDebtToMax(realDeficit);
         }
       } else if (settledBalance >= state.sessionMaxBalance) {
         state.sessionMaxBalance = settledBalance;
@@ -1533,8 +1552,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
             '🛡️ [TRAILING RATCHET] [${mode.displayName}] Ratcheted protected principal up to ${state.protectedPrincipal!.toStringAsFixed(8)} (Locked 97% of ATH: ${settledBalance.toStringAsFixed(8)})',
           );
         }
-        // 🎯 เมื่อยอดเงินจริงในบัญชีแตะจุดสูงสุด (ATH) หรือมากกว่าเดิม และไม่ได้อยู่ใน streak แพ้ค้างอยู่ -> เคลียร์หนี้เป็น 0 ทันที
-        if (state.consecutiveLossesStreak == 0 && state.totalAccumulatedLoss > 0.00000001) {
+        // 🎯 เมื่อยอดเงินจริงในบัญชีแตะจุดสูงสุด (ATH) หรือมากกว่าเดิม -> เคลียร์หนี้เป็น 0 ทันที
+        if (state.totalAccumulatedLoss > 0.00000001) {
           state.resetDebt();
           debugPrint(
             '🎉 [ATH REACHED] 🌟 [${mode.displayName}] ยอดเงินแตะจุดสูงสุด (${settledBalance.toStringAsFixed(8)}) ล้างหนี้สะสมทั้งหมดเป็น 0.00000000 ทันที!',
@@ -1997,25 +2016,28 @@ class OverlayButtonsViewModel with ChangeNotifier {
           await _performButtonAction('M0', mode: mode);
           if (_shouldAbort(runToken, mode: mode)) break;
 
+          final bool wasRecoveryRound = state.isCurrentlyRecoveryRound;
+          state.isCurrentlyRecoveryRound = false;
+
           // 🔍 VERIFY WIN VIA BALANCE & HIGHEST BALANCE (User Directive)
           // "เพราะว่าบางครั้งมันบอกว่าชนะแต่ยอดเงินไม่เพิ่มขึ้นเป็นเพราะเน็ตช้าครับ"
-          // รอตรวจสอบให้ยอดเงินขยับเพิ่มขึ้นจริง และอัปเดตยอดสูงสุด (Highest Balance)
+          // "เช่นตอนเนัดช้ามันก็จะกดไปก่อนแล้วแต่เงีนยังไม่เข้ามันเข้าใจว่าหนี้หมดแล้ว มันต้องดู New High ไม่ใช่ดูแต่ชนะ/แพ้"
           double balanceAfterWin = 0.0;
           bool balanceIncreased = false;
-          for (int poll = 1; poll <= 10; poll++) {
-            await Future.delayed(Duration(milliseconds: (500 / _speedMultiplier).round()));
+          final int maxWinPolls = wasRecoveryRound || state.totalAccumulatedLoss > 0.00000001 ? 25 : 15;
+          for (int poll = 1; poll <= maxWinPolls; poll++) {
+            await Future.delayed(const Duration(milliseconds: 500));
             balanceAfterWin = await _getBalanceDouble(mode: mode);
             if (balanceBeforeRound > 0.00000001 && balanceAfterWin > balanceBeforeRound + 0.00000001) {
               balanceIncreased = true;
               break;
             }
+            if (_shouldAbort(runToken, mode: mode)) break;
           }
           if (_shouldAbort(runToken, mode: mode)) break;
 
           double winningBet = await _getBetAmount(mode: mode);
           if (winningBet <= 0.0) winningBet = state.currentBetAmount;
-          final bool wasRecoveryRound = state.isCurrentlyRecoveryRound;
-          state.isCurrentlyRecoveryRound = false;
 
           final double defaultFloor = getFloorBetForMode(mode);
           final double floorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[mode] ?? defaultFloor;
@@ -2160,22 +2182,42 @@ class OverlayButtonsViewModel with ChangeNotifier {
             debugPrint('💰 [DEBT PAYDOWN] [${mode.displayName}] นำกำไรที่ชนะจริง (+${actualProfit.toStringAsFixed(8)}) มาหักลดหนี้สะสม! หนี้คงเหลือ: ${state.totalAccumulatedLoss.toStringAsFixed(8)}');
           }
 
-          // 🎯 คำนวณยอดเงินจริงสำหรับตรวจสอบ ATH:
-          double currentBalForCheck = balanceIncreased && balanceAfterWin > 0.00000001
+          // 🎯 คำนวณยอดเงินจริงสำหรับตรวจสอบ New High (ATH):
+          // "มันต้องดู New High ไม่ใช่ดูแต่ชนะ/แพ้"
+          final double currentBalForCheck = balanceIncreased && balanceAfterWin > 0.00000001
               ? balanceAfterWin
               : (balanceBeforeRound > 0.00000001 ? balanceBeforeRound : currentBalance);
 
-          bool isFullyRecovered = false;
-          if (balanceIncreased && state.sessionMaxBalance > 0.00000001 && currentBalForCheck < state.sessionMaxBalance - 0.00000001) {
-            final double remainingDeficit = state.sessionMaxBalance - currentBalForCheck;
-            if (state.totalAccumulatedLoss > remainingDeficit + 0.00000001) {
-              state.clampDebtToMax(remainingDeficit);
+          // ตรวจสอบ New High จากยอดเงินจริงเท่านั้น (ไม่ใช่ดูแค่ชนะ/แพ้):
+          final bool reachedNewHigh = state.sessionMaxBalance > 0.00000001 &&
+              currentBalForCheck >= (state.sessionMaxBalance - 0.00000001);
+
+          if (reachedNewHigh) {
+            if (currentBalForCheck > state.sessionMaxBalance) {
+              state.sessionMaxBalance = currentBalForCheck;
             }
-            isFullyRecovered = false;
-          } else if (balanceIncreased) {
-            isFullyRecovered = state.totalAccumulatedLoss <= 0.00000001 || (currentBalForCheck >= state.sessionMaxBalance && state.sessionMaxBalance > 0.00000001);
+            state.resetDebt();
+            debugPrint(
+              '🎉 [NEW ATH WIN 🌟] [${mode.displayName}] ยอดเงินแตะ New High: ${currentBalForCheck.toStringAsFixed(8)} (ATH: ${state.sessionMaxBalance.toStringAsFixed(8)}) -> ล้างหนี้สะสมทั้งหมดเป็น 0.00000000 ทันที!',
+            );
           } else {
-            isFullyRecovered = false;
+            // ยังไม่แตะ New High (เงินยังไม่เข้าเพราะเน็ตช้า หรือกำไรยังไม่พอปิดยอดขาดดุล ATH)
+            // 🎯 กฎเหล็ก: ห้ามล้างหนี้เด็ดขาด! หนี้จริงคือระยะห่างจาก New High
+            final double realDeficit = state.sessionMaxBalance > 0.00000001
+                ? max(0.0, state.sessionMaxBalance - currentBalForCheck)
+                : 0.0;
+            if (realDeficit > 0.00000001) {
+              state.clampDebtToMax(realDeficit);
+              if (state.totalAccumulatedLoss <= 0.00000001) {
+                // ถ้ากำไรทางทฤษฎีตัดหนี้จนเป็น 0 แต่ยอดเงินยังไม่แตะ New High (เพราะเน็ตช้าเงินยังไม่เข้าจริง)
+                // ให้คงหนี้ขาดดุลจริงไว้เสมอ ป้องกันการลืมหนี้!
+                state.activeNewLoss = double.parse(realDeficit.toStringAsFixed(8));
+                debugPrint(
+                  '🛡️ [DEBT PRESERVED - PENDING NEW HIGH] [${mode.displayName}] ยอดเงินจริง (${currentBalForCheck.toStringAsFixed(8)}) ยังไม่ถึง New High (${state.sessionMaxBalance.toStringAsFixed(8)}) '
+                  'ขาดอีก: ${realDeficit.toStringAsFixed(8)} -> คงหนี้ไว้ ${realDeficit.toStringAsFixed(8)} ห้ามลืมหนี้เด็ดขาด!',
+                );
+              }
+            }
           }
 
           if (wasRecoveryRound) {
@@ -2191,14 +2233,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
             await _ensureBaseBet(runToken, mode: mode);
 
             // 🎯 100% RECOVERY COMPLETION CHECK ("ชนะกลับไป Base Bet"):
-            // เมื่อชนะไม้ทวงหนี้ ให้เคลียร์หนี้หมดและกลับสู่การเล่น Base Bet ปกติทันที (ไม่ล็อกดูเชิง)
+            // เมื่อชนะไม้ทวงหนี้ ให้กลับสู่การเล่น Base Bet ปกติทันที (ไม่ล็อกดูเชิง)
             state.observationRoundsRemaining = 0;
             state.isLossStreakBaseBetLocked = false;
             state.recoveryStepInCycle = 0;
             state.currentRecoveryCycle = 1;
             state.consecutiveLossesStreak = 0;
 
-            if (state.totalAccumulatedLoss <= 0.00000001) {
+            if (reachedNewHigh) {
               state.resetDebt();
               state.observationRoundsRemaining = 0;
               state.isLossStreakBaseBetLocked = false;
@@ -2208,29 +2250,26 @@ class OverlayButtonsViewModel with ChangeNotifier {
               state.peakLossStreak = 0;
               state.ghostSniperWinCount = 0;
               transitionRecoveryState(mode, RecoveryState.normal,
-                  reason: 'Recovery WIN - full debt cleared -> return to normal Base Bet');
-              if (currentBalForCheck > 0.00000001) {
+                  reason: 'Recovery WIN - New High reached -> 100% debt cleared -> return to normal Base Bet');
+              if (currentBalForCheck > state.sessionMaxBalance) {
                 state.sessionMaxBalance = currentBalForCheck;
-                state.protectedPrincipal = currentBalForCheck * 0.97;
               }
-              debugPrint('🎉 [100% RECOVERY VICTORY] 🌟 [${mode.displayName}] ไม้ทวงหนี้ชนะสำเร็จ! ล้างหนี้เป็น 0.00000000 ครบ 100% -> กลับสู่การเดิน Base Bet ปกติ');
+              state.protectedPrincipal = currentBalForCheck * 0.97;
+              debugPrint('🎉 [100% RECOVERY VICTORY - NEW HIGH] 🌟 [${mode.displayName}] ไม้ทวงหนี้ชนะสำเร็จ! ยอดแตะ New High (${currentBalForCheck.toStringAsFixed(8)}) ล้างหนี้เป็น 0.00000000 ครบ 100% -> เดิน Base Bet ปกติ');
             } else {
-              // หากยังมีหนี้คงเหลือ (กรณีติดลิมิตยอดเดิมพันสูงสุด):
+              // ชนะไม้ทวงแต่ยอดเงินยังไม่แตะ New High (เช่น เน็ตช้าเงินยังไม่เข้า หรือกำไรยังไม่เต็มยอด):
               transitionRecoveryState(mode, RecoveryState.normal,
-                  reason: 'Recovery round won with remaining debt -> return to normal Base Bet');
+                  reason: 'Recovery round won (Pending New High) -> return to Base Bet with debt preserved');
               debugPrint(
-                '💎 [RECOVERY ROUND WON] [${mode.displayName}] ชนะไม้ทวงสำเร็จ! หักกำไร +${actualProfit.toStringAsFixed(8)} | หนี้คงเหลือ: ${state.totalAccumulatedLoss.toStringAsFixed(8)} -> กลับสู่การเดิน Base Bet',
+                '💎 [RECOVERY ROUND WON - PENDING NEW HIGH] [${mode.displayName}] ชนะไม้ทวงสำเร็จ! แต่ยอดเงินยังไม่แตะ New High (${currentBalForCheck.toStringAsFixed(8)} < ${state.sessionMaxBalance.toStringAsFixed(8)}) '
+                'หนี้คงค้าง: ${state.totalAccumulatedLoss.toStringAsFixed(8)} -> กลับสู่การเดิน Base Bet และคงหนี้ไว้จนกว่ายอดจะเข้า New High',
               );
             }
           } else {
             state.justWonRecoveryBet = false;
-            if (isFullyRecovered && state.totalAccumulatedLoss > 0) {
+            if (reachedNewHigh) {
               state.resetDebt();
-              transitionRecoveryState(mode, RecoveryState.normal, reason: 'Debt cleared by base bet profit');
-            }
-            if (isFullyRecovered) {
-              state.resetDebt();
-              transitionRecoveryState(mode, RecoveryState.normal, reason: 'ATH reached');
+              transitionRecoveryState(mode, RecoveryState.normal, reason: 'ATH reached on Base Bet');
               state.recoveryWinsAchieved = 0;
               state.isRecoveryUnlocked = false;
               state.peakLossStreak = 0;
@@ -2239,7 +2278,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
               state.recoveryCooldownRounds = 0;
 
               _randomizeRhythm();
-              debugPrint('🎉 [ATH VICTORY] 🌟 [${mode.displayName}] ชนะ Base Bet แตะ New High! กลับสู่โหมด Base Bet ปกติ');
+              debugPrint('🎉 [ATH VICTORY] 🌟 [${mode.displayName}] ชนะ Base Bet แตะ New High (${currentBalForCheck.toStringAsFixed(8)})! ล้างหนี้เป็น 0 และเล่น Base Bet ต่อเนื่อง');
               await rotateWebClientSeed(mode: mode);
               await _ensureBaseBet(runToken, mode: mode);
             }

@@ -115,7 +115,7 @@ void main() {
           reason: 'Circuit breaker must unconditionally block recovery after 3 failed attempts, retreating to Base Bet');
     });
 
-    test('Scenario 5: Selective Recovery Gate (Sniper Recovery): HoldFire or High Chaos (> 0.70) blocks recovery entry', () {
+    test('Scenario 5: Recovery Gate Removed: HoldFire does not block recovery entry when debt exists (Immediate Recovery)', () {
       state.activeNewLoss = 0.50;
       state.recoveryLossStreak = 0;
       state.recoveryState = RecoveryState.recoveryGate;
@@ -138,10 +138,10 @@ void main() {
         isCasinoTargeting: true,
       );
 
-      // Evaluated against HoldFire: Selective Recovery Gate holds fire and stays at Base Bet
+      // Per user directive: Selective Recovery Gate removed, immediate recovery allowed
       final bool approved = state.canEnterRecovery(omniResult: holdFireResult);
-      expect(approved, isFalse,
-          reason: 'Selective Recovery Gate must block recovery entry when market is in High Chaos / HoldFire');
+      expect(approved, isTrue,
+          reason: 'Selective Recovery Gate removed: recovery must proceed immediately when debt exists');
     });
 
     test('Scenario 6: Gate passes -> Recovery WIN -> Debt cleared, recoveryLossStreak reset to 0, returns to normal', () {

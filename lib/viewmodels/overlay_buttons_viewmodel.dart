@@ -273,13 +273,6 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คัดกรองเฉพาะกรณีที่ OmniMatrix สั่ง Hold Fire (ไม่บล็อก High Chaos ตามคำสั่งผู้ใช้)
-    if (omniResult != null) {
-      if (omniResult.recoveryClearance == RecoveryClearance.holdFire) {
-        return false;
-      }
-    }
-
     return true;
   }
 
@@ -3523,7 +3516,6 @@ class OverlayButtonsViewModel with ChangeNotifier {
     // รอบที่ 2: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 3: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก
     // 🎯 FULL DEBT RECOVERY: ทวงหนี้เต็ม 100% ต่อตา (ตามคำสั่งผู้ใช้)
-    // ป้องกัน All-in โดย PILLAR 4 (5% bankroll cap) และ Absolute ceiling (7%)
     final double debtToEscalate = totalDebt;
 
     debugPrint(
@@ -3556,28 +3548,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = casinoHardLimit;
     }
 
-    // 🛡️ AQ-DARE PILLAR 4: HALF-KELLY BET SIZING (Max 5% of Bankroll Cap, Absolute Cap 7%)
-    // ห้าม All-in เด็ดขาด 100%! ไม่ว่าจะมีหนี้สะสมเท่าไหร่ก็ตาม เบททวงต้องไม่เกิน 5% ของยอดเงินในกระเป๋า
-    // หากหนี้สูงเกินไป ให้ผ่อนทวงหลายตา แทนที่จะทุ่มหมดตัวในตาเดียว
-    if (currentBalance > 0.00000001) {
-      final double maxBankrollCap = currentBalance * 0.05;
-      if (requiredBet > maxBankrollCap) {
-        debugPrint(
-          '🛡️ [AQ-DARE PILLAR 4: 5% HARD BET CAP] Required bet (${requiredBet.toStringAsFixed(8)}) exceeds 5% bankroll cap (${maxBankrollCap.toStringAsFixed(8)}). Capped to 5% of balance!',
-        );
-        requiredBet = maxBankrollCap;
-      }
-    }
-
     // Floor protection: ต้องไม่ต่ำกว่า Base Bet ขั้นต่ำ
     if (requiredBet < floorBet) {
       requiredBet = floorBet;
     }
 
-    // Absolute sanity ceiling: ห้ามเดิมพันเกิน 7% ของ balance เด็ดขาด
-    if (currentBalance > floorBet && requiredBet > currentBalance * 0.07) {
-      requiredBet = currentBalance * 0.07;
-    }
 
     requiredBet = double.parse(requiredBet.toStringAsFixed(8));
     state.currentBetAmount = requiredBet;

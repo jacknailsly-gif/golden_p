@@ -121,7 +121,7 @@ void main() {
       expect(state.canEnterRecovery(), isFalse, reason: 'Recovery bet strictly prohibited during Safe Haven');
     });
 
-    test('Selective Recovery Gate: High Chaos (> 0.70) or HoldFire blocks recovery entry, Low Chaos allows', () {
+    test('Recovery Gate Removed: Immediate recovery allowed regardless of HoldFire/Chaos when debt exists', () {
       state.activeNewLoss = 0.050; // Has debt
       state.consecutiveLossesStreak = 1;
       state.observationRoundsRemaining = 0;
@@ -146,9 +146,9 @@ void main() {
         isCasinoTargeting: true,
       );
 
-      // 1. High Chaos / HoldFire -> blocked!
-      expect(state.canEnterRecovery(omniResult: holdFireResult), isFalse,
-          reason: 'Selective Recovery Gate must block recovery entry when market is in High Chaos / HoldFire');
+      // Per user directive: Selective Recovery Gate removed, immediate recovery allowed
+      expect(state.canEnterRecovery(omniResult: holdFireResult), isTrue,
+          reason: 'Selective Recovery Gate removed: recovery must proceed immediately when debt exists');
 
       // 2. Clear edge / Low Chaos -> approved!
       const clearResult = OmniPredictionResult(
@@ -170,7 +170,7 @@ void main() {
       );
 
       expect(state.canEnterRecovery(omniResult: clearResult), isTrue,
-          reason: 'Selective Recovery Gate must approve recovery entry when market has solid edge and low chaos');
+          reason: 'Recovery entry approved when debt exists');
     });
 
     test('Weighted Randomized Recovery Quota: Bounds and Cycle 1 capping', () {

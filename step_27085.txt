@@ -1,0 +1,6 @@
+<USER_REQUEST>
+ช่วยปรับ Base bet ให้เปันแบบ Dynamic ตามยอดเงีนจรืง และใช้ min Bet เมื่อ Base bet น้อยกว่า min Bet เท่านั้น
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-25T12:27:20+07:00.
+</ADDITIONAL_METADATA>

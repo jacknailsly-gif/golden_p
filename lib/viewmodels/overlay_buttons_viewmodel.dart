@@ -273,9 +273,9 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คัดกรองเฉพาะภาวะวิกฤติตลาดผันผวนสูงลิ่ว (Chaos > 0.70) หรือ Hold Fire
+    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คัดกรองเฉพาะกรณีที่ OmniMatrix สั่ง Hold Fire (ไม่บล็อก High Chaos ตามคำสั่งผู้ใช้)
     if (omniResult != null) {
-      if (omniResult.recoveryClearance == RecoveryClearance.holdFire || omniResult.chaosIndex > 0.70) {
+      if (omniResult.recoveryClearance == RecoveryClearance.holdFire) {
         return false;
       }
     }
@@ -1710,12 +1710,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
           final double normalizedConf = omniResult.confidence <= 1.0
               ? omniResult.confidence * 100.0
               : omniResult.confidence;
-          if (omniResult.recoveryClearance == RecoveryClearance.holdFire ||
-              omniResult.chaosIndex >= 0.50 ||
-              normalizedConf < 75.0 ||
-              omniResult.mathematicalEdge < 0.05) {
+          if (omniResult.recoveryClearance == RecoveryClearance.holdFire) {
             debugPrint(
-              '🎯 [AQ-DARE SNIPER RECOVERY 🛡️] [${mode.displayName}] Filter Blocked (Chaos: ${omniResult.chaosIndex.toStringAsFixed(2)}, Conf: ${normalizedConf.toStringAsFixed(1)}%, Edge: ${omniResult.mathematicalEdge.toStringAsFixed(2)}, Regime: ${omniResult.marketRegime}) -> ชะลอไม้ทวง เดิน Base Bet สอดแนมก่อน',
+              '🎯 [AQ-DARE SNIPER RECOVERY 🛡️] [${mode.displayName}] Hold Fire (Chaos: ${omniResult.chaosIndex.toStringAsFixed(2)}, Conf: ${normalizedConf.toStringAsFixed(1)}%, Edge: ${omniResult.mathematicalEdge.toStringAsFixed(2)}, Regime: ${omniResult.marketRegime}) -> ชะลอไม้ทวง เดิน Base Bet สอดแนมก่อน',
             );
           }
         }

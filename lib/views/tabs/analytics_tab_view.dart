@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../viewmodels/sequence_analyzer_viewmodel.dart';
 import '../../viewmodels/overlay_buttons_viewmodel.dart';
+import '../../models/game_mode.dart';
 
 class AnalyticsTabView extends StatefulWidget {
   const AnalyticsTabView({super.key});
@@ -11,20 +12,23 @@ class AnalyticsTabView extends StatefulWidget {
 }
 
 class _AnalyticsTabViewState extends State<AnalyticsTabView> {
-  final TextEditingController _tpController = TextEditingController();
+  final TextEditingController _towersTpController = TextEditingController();
+  final TextEditingController _minesTpController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final overlayVM = context.read<OverlayButtonsViewModel>();
-      _tpController.text = overlayVM.stopProfitPercent.toStringAsFixed(1);
+      _towersTpController.text = overlayVM.getStopProfitPercentFor(GameMode.towers).toStringAsFixed(1);
+      _minesTpController.text = overlayVM.getStopProfitPercentFor(GameMode.mines).toStringAsFixed(1);
     });
   }
 
   @override
   void dispose() {
-    _tpController.dispose();
+    _towersTpController.dispose();
+    _minesTpController.dispose();
     super.dispose();
   }
 
@@ -266,7 +270,62 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: overlayVM.isStopProfitEnabled ? const Color(0xFF10B981) : Colors.white.withValues(alpha: 0.05),
+          color: Colors.white.withValues(alpha: 0.05),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.flag_circle, color: Color(0xFF10B981), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Stop Profit Target (แยกอิสระ 100%)',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // 🏰 Towers Stop Profit
+          _buildModeStopProfitCard(
+            mode: GameMode.towers,
+            overlayVM: overlayVM,
+            controller: _towersTpController,
+            color: const Color(0xFF3B82F6),
+          ),
+          const SizedBox(height: 12),
+          // 💎 Mine Stop Profit
+          _buildModeStopProfitCard(
+            mode: GameMode.mines,
+            overlayVM: overlayVM,
+            controller: _minesTpController,
+            color: const Color(0xFF10B981),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeStopProfitCard({
+    required GameMode mode,
+    required OverlayButtonsViewModel overlayVM,
+    required TextEditingController controller,
+    required Color color,
+  }) {
+    final bool isEnabled = overlayVM.isStopProfitEnabledFor(mode);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F1423),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isEnabled ? color.withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.05),
+          width: 1,
         ),
       ),
       child: Column(
@@ -275,91 +334,73 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.flag_circle, color: Color(0xFF10B981), size: 24),
-                  SizedBox(width: 8),
-                  Text(
-                    'Stop Profit Target',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
+              Text(
+                '${mode.displayName} Target',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               Switch(
-                value: overlayVM.isStopProfitEnabled,
+                value: isEnabled,
                 onChanged: (val) {
-                  overlayVM.setStopProfitEnabled(val);
+                  overlayVM.setStopProfitEnabled(val, mode: mode);
                 },
-                activeColor: const Color(0xFF10B981),
+                activeColor: color,
               ),
             ],
           ),
-          if (overlayVM.isStopProfitEnabled) ...[
-            const SizedBox(height: 16),
-            const Text(
-              'Target Profit (%)',
-              style: TextStyle(
-                color: Color(0xFF94A3B8),
-                fontSize: 12,
-              ),
-            ),
+          if (isEnabled) ...[
             const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
                   child: TextField(
-                    controller: _tpController,
+                    controller: controller,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(color: Colors.white),
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
                       filled: true,
-                      fillColor: const Color(0xFF0F1423),
+                      fillColor: const Color(0xFF1E293B),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(6),
                         borderSide: BorderSide.none,
                       ),
                       suffixText: '%',
                       suffixStyle: const TextStyle(color: Color(0xFF94A3B8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     ),
                     onSubmitted: (value) {
                       double? parsed = double.tryParse(value);
                       if (parsed != null && parsed > 0) {
-                        overlayVM.setStopProfitPercent(parsed);
+                        overlayVM.setStopProfitPercent(parsed, mode: mode);
                       }
                     },
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 ElevatedButton(
                   onPressed: () {
-                    double? parsed = double.tryParse(_tpController.text);
+                    double? parsed = double.tryParse(controller.text);
                     if (parsed != null && parsed > 0) {
-                      overlayVM.setStopProfitPercent(parsed);
+                      overlayVM.setStopProfitPercent(parsed, mode: mode);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Saved target: $parsed%')),
+                        SnackBar(content: Text('Saved [${mode.displayName}] target: $parsed%')),
                       );
                     }
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    backgroundColor: color,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                   ),
-                  child: const Text('Save'),
+                  child: const Text('Save', style: TextStyle(fontSize: 12)),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Bot will completely halt when net profit hits this target.',
-              style: TextStyle(color: Color(0xFFF59E0B), fontSize: 11),
-            )
           ],
         ],
       ),

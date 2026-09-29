@@ -37,6 +37,18 @@ class DebtBucket {
   int get remainingMinutes => freezeUntil.difference(DateTime.now()).inMinutes;
 }
 
+/// 🎯 ปัดเศษตัวเลขเดิมพันเป็นเลขนัยสำคัญ (Significant Digits):
+/// คำสั่งผู้ใช้: "ให้ปรับพิมพ์ตัวเลขหลังแค่ 3 ตัว เช่นคำนวนยอดทวงหนี้ คือ 0.000654589 เราจะพิมพ์แค่ 0.000655 แค่นี้"
+/// ทั้ง ยอดทวง และ Base bet
+double roundToSignificantDigits(double value, int sigFigs) {
+  if (value == 0 || value.isNaN || value.isInfinite) return 0.0;
+  final double d = (log(value.abs()) / ln10);
+  final int exp = d.floor();
+  final double factor = pow(10, sigFigs - 1 - exp).toDouble();
+  final double rounded = (value * factor).round() / factor;
+  return double.parse(rounded.toStringAsFixed(8));
+}
+
 /// Independent runtime state container for each GameMode (Towers vs Mines)
 class GameModeSessionState {
   final GameMode mode;
@@ -371,9 +383,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
   String? _recordingButtonId;
   late SharedPreferences _prefs;
 
-  // --- Stop Loss / Stop Profit / Safety ---
-  bool _isStopProfitEnabled = false;
-  double _stopProfitPercent = 10.0;
+  // --- Stop Loss / Stop Profit / Safety (Isolated per GameMode 100%) ---
+  final Map<GameMode, bool> _isStopProfitEnabledByMode = {
+    GameMode.towers: false,
+    GameMode.mines: false,
+  };
+  final Map<GameMode, double> _stopProfitPercentByMode = {
+    GameMode.towers: 10.0,
+    GameMode.mines: 10.0,
+  };
   bool _is24HourMode = true; // 🌟 24/7 Autonomous Continuous Non-Stop Mode (Default ON)
   int _maxM5Steps = 5;
   String _stopReason = '';
@@ -442,8 +460,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
   bool get shouldAbsorbMainContent => isAnyRunning && !_nativeClickPassthrough;
   bool shouldAbsorbMainContentForMode(GameMode mode) => isRunningForMode(mode) && !_nativeClickPassthrough;
 
-  bool get isStopProfitEnabled => _isStopProfitEnabled;
-  double get stopProfitPercent => _stopProfitPercent;
+  bool isStopProfitEnabledFor(GameMode mode) => _isStopProfitEnabledByMode[mode] ?? false;
+  double getStopProfitPercentFor(GameMode mode) => _stopProfitPercentByMode[mode] ?? 10.0;
+
+  bool get isStopProfitEnabled => isStopProfitEnabledFor(_activeGameMode);
+  double get stopProfitPercent => getStopProfitPercentFor(_activeGameMode);
   bool get is24HourMode => _is24HourMode;
   int get maxM5Steps => _maxM5Steps;
   String get stopReason => _stopReason;
@@ -574,8 +595,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
     await loadButtonPositions();
     await loadSequenceFromStorage();
 
-    _isStopProfitEnabled = _prefs.getBool('tp_enabled') ?? false;
-    _stopProfitPercent = _prefs.getDouble('tp_percent') ?? 10.0;
+    for (var m in GameMode.values) {
+      _isStopProfitEnabledByMode[m] = _prefs.getBool('${m.storagePrefix}_tp_enabled') ??
+          _prefs.getBool('tp_enabled') ??
+          false;
+      _stopProfitPercentByMode[m] = _prefs.getDouble('${m.storagePrefix}_tp_percent') ??
+          _prefs.getDouble('tp_percent') ??
+          10.0;
+    }
     _is24HourMode = _prefs.getBool('overlay_24hour_mode') ?? true;
     _maxM5Steps = _prefs.getInt('max_m5_steps') ?? 5;
 
@@ -635,18 +662,26 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
-  void setStopProfitEnabled(bool val) {
-    _isStopProfitEnabled = val;
-    _prefs.setBool('tp_enabled', val);
+  void setStopProfitEnabled(bool val, {GameMode? mode}) {
+    final targetMode = mode ?? _activeGameMode;
+    _isStopProfitEnabledByMode[targetMode] = val;
+    try {
+      _prefs.setBool('${targetMode.storagePrefix}_tp_enabled', val);
+      _prefs.setBool('tp_enabled', val);
+    } catch (_) {}
     if (isAnyRunning) {
       _startPnLMonitor();
     }
     notifyListeners();
   }
 
-  void setStopProfitPercent(double val) {
-    _stopProfitPercent = val;
-    _prefs.setDouble('tp_percent', val);
+  void setStopProfitPercent(double val, {GameMode? mode}) {
+    final targetMode = mode ?? _activeGameMode;
+    _stopProfitPercentByMode[targetMode] = val;
+    try {
+      _prefs.setDouble('${targetMode.storagePrefix}_tp_percent', val);
+      _prefs.setDouble('tp_percent', val);
+    } catch (_) {}
     if (isAnyRunning) {
       _startPnLMonitor();
     }
@@ -1163,7 +1198,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
     _slCheckCounter = 0;
     debugPrint(
-      '[START] 🚀 [${targetMode.displayName}] Sequence started | StopProfit: ${_isStopProfitEnabled ? "ON (${_stopProfitPercent.toStringAsFixed(4)}%)" : "OFF"} | SmartMode: $_isSmartMode',
+      '[START] 🚀 [${targetMode.displayName}] Sequence started | StopProfit: ${isStopProfitEnabledFor(targetMode) ? "ON (${getStopProfitPercentFor(targetMode).toStringAsFixed(4)}%)" : "OFF"} | SmartMode: $_isSmartMode',
     );
     _startPnLMonitor();
     _sessionStartTime = DateTime.now();
@@ -1197,7 +1232,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
   void _startPnLMonitor() {
     _stopPnLMonitor();
-    if (_isStopProfitEnabled) {
+    final bool anyTpEnabled = _isStopProfitEnabledByMode.values.any((e) => e);
+    if (anyTpEnabled) {
       _slCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (
         _,
       ) async {
@@ -1232,23 +1268,23 @@ class OverlayButtonsViewModel with ChangeNotifier {
       if (_isDisposed || !state.isRunning) continue;
 
       final double pnl = analyzer.getProfitForMode(mode);
+      final bool isTpEnabled = isStopProfitEnabledFor(mode);
+      final double targetTp = getStopProfitPercentFor(mode);
 
       _slCheckCounter++;
       if (_slCheckCounter % 10 == 0) {
         debugPrint(
-          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${_stopProfitPercent.toStringAsFixed(4)}% | Enabled: $_isStopProfitEnabled',
+          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${targetTp.toStringAsFixed(4)}% | Enabled: $isTpEnabled',
         );
       }
 
-      if (_isStopProfitEnabled && pnl >= _stopProfitPercent) {
+      if (isTpEnabled && pnl >= targetTp) {
         if (!_is24HourMode) {
           _stopReason =
-              '🌟 STOP PROFIT triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Target: +${_stopProfitPercent.toStringAsFixed(4)}%)';
-          debugPrint('[PnL MONITOR] 🛑 $_stopReason — FORCING IMMEDIATE HALT ALL MODES');
-          for (var m in GameMode.values) {
-            stopSequence(mode: m);
-          }
-          return;
+              '🌟 STOP PROFIT triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Target: +${targetTp.toStringAsFixed(4)}%)';
+          debugPrint('[PnL MONITOR] 🛑 $_stopReason — STOPPING ${mode.displayName} ONLY (ISOLATED 100%)');
+          stopSequence(mode: mode); // 🎯 แยกออกจากกัน 100%! หยุดเฉพาะหน้านี้เท่านั้น ไม่แตะต้องอีกหน้า
+          continue;
         }
       }
     }
@@ -1265,7 +1301,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<bool> _checkStopProfitInline(int runToken, {GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
-    if (!_isStopProfitEnabled) {
+    if (!isStopProfitEnabledFor(targetMode)) {
       return false;
     }
 
@@ -1282,9 +1318,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
       pnl = ((curBalance - state.sessionStartBalance!) / state.sessionStartBalance!) * 100;
     }
 
-    if (pnl >= _stopProfitPercent) {
+    final double targetTp = getStopProfitPercentFor(targetMode);
+    if (pnl >= targetTp) {
       _stopReason =
-          '🌟 STOP PROFIT reached at ${pnl.toStringAsFixed(4)}% on ${targetMode.displayName} (Target: +${_stopProfitPercent.toStringAsFixed(4)}%)';
+          '🌟 STOP PROFIT reached at ${pnl.toStringAsFixed(4)}% on ${targetMode.displayName} (Target: +${targetTp.toStringAsFixed(4)}%)';
       debugPrint('[INLINE TP] 🛑 [${targetMode.displayName}] $_stopReason');
 
       if (_is24HourMode) {
@@ -1302,12 +1339,13 @@ class OverlayButtonsViewModel with ChangeNotifier {
         await Future.delayed(Duration(seconds: (180 / _speedMultiplier).round()));
         return false; // ไม่ตัดลูป! ทำงานต่อเนื่อง 24 ชั่วโมง
       } else {
-        stopSequence(mode: targetMode);
+        stopSequence(mode: targetMode); // 🎯 หยุดเฉพาะ targetMode แยกออกจากกัน 100%!
         return true;
       }
     }
     return false;
   }
+
 
   /// 🛡️ SHIELD 2: HARD STOP-LOSS ENGINE (30% Max Drawdown Protection)
   /// ป้องกันการล้างพอร์ต 100%: หากยอดเงินร่วงลงเกิน 30% จากจุดสูงสุด (ATH) หรือเงินเริ่มต้น
@@ -2845,8 +2883,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final controller = getWebViewController(targetMode);
     if (controller == null) return;
     try {
-      state.currentBetAmount = amount;
-      String amountStr = amount.toStringAsFixed(8);
+      // 🎯 คำสั่งผู้ใช้: "การพิมพ์เลขนัยสำคัญ 3 ตัวทั้ง ยอดทวง และ Base bet เช่น 0.000654589 -> 0.000655"
+      final double roundedAmount = roundToSignificantDigits(amount, 3);
+      state.currentBetAmount = roundedAmount;
+      String amountStr = roundedAmount.toStringAsFixed(8);
       if (amountStr.contains('.')) {
         amountStr = amountStr.replaceAll(RegExp(r'0*$'), '');
         if (amountStr.endsWith('.')) {
@@ -3336,7 +3376,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(targetMode);
     final double defaultFloor = getFloorBetForMode(targetMode, coinType: coin);
     final double currentBalance = await _getBalanceDouble(mode: targetMode);
-    final double calculated = targetMode.calculateBaseBet(currentBalance, defaultFloor, coin: coin);
+    final double rawCalculated = targetMode.calculateBaseBet(currentBalance, defaultFloor, coin: coin);
+    final double calculated = roundToSignificantDigits(rawCalculated, 3);
     state.lockedBaseBet = calculated;
     _lockedBaseBetByMode[targetMode] = calculated;
     return calculated;
@@ -3548,16 +3589,21 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = casinoHardLimit;
     }
 
+    // 🎯 คำสั่งผู้ใช้: "การพิมพ์เลขนัยสำคัญ 3 ตัวทั้ง ยอดทวง และ Base bet เช่น 0.000654589 -> 0.000655"
+    requiredBet = roundToSignificantDigits(requiredBet, 3);
+    if (currentBalance > 0.00000001 && requiredBet > currentBalance) {
+      requiredBet = currentBalance;
+    }
+
     // Floor protection: ต้องไม่ต่ำกว่า Base Bet ขั้นต่ำ
     if (requiredBet < floorBet) {
       requiredBet = floorBet;
     }
 
-
     requiredBet = double.parse(requiredBet.toStringAsFixed(8));
     state.currentBetAmount = requiredBet;
     debugPrint(
-      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | ทวงเต็ม 100%: ${debtToEscalate.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
+      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | ทวงเต็ม 100%: ${debtToEscalate.toStringAsFixed(8)} | เบททวง (3 sig-figs): ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
     );
 
     // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ เพื่อให้แน่ใจว่าเว็บรับยอดทวงหนี้ 100% เต็ม

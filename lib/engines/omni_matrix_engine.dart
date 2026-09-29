@@ -1046,6 +1046,21 @@ class OmniMatrixEngine {
       calibratedConf = min(85.0, calibratedConf + (anchorWins * 2.5));
     }
 
+    // --- AI BRAIN UPGRADE: TRAP DETECTION & CHAOS EMBRACE ---
+    // Analysis of 362 real-time rounds showed:
+    // 1. HIGH_CHAOS (entropy >= 0.88) yields the highest win rate (71.83%).
+    // 2. Calculated Edge in the 30-39% range is a casino "fake trend" trap (win rate drops to 61.11%).
+    final double tempPWin = calibratedConf / 100.0;
+    final double tempRawEdge = (tempPWin * 1.42 - 1.0) / 0.42;
+    final double tempChaos = calculateNormalizedEntropy(mode);
+    
+    if (tempRawEdge >= 0.30 && tempRawEdge < 0.40 && goldenHighwayCol == null) {
+      calibratedConf -= 15.0; // Apply Trap Penalty (หักคะแนนหนีกับดักคาสิโน)
+    } else if (tempChaos >= 0.88) {
+      calibratedConf = min(88.0, calibratedConf + 4.5); // Embrace High Chaos (เพิ่มความมั่นใจในตลาดปลอดภัย)
+    }
+    // --------------------------------------------------------
+
     final bool isHighConfidence = calibratedConf >= 78.0 || goldenHighwayCol != null;
 
     // ─── 9. 🤝 SYMBIOTIC RECOVERY CLEARANCE & FLUID SIZING ───

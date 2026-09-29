@@ -107,8 +107,29 @@ class GameModeSessionState {
   int maxRecoveryStepsThisCycle = 2; // 🎯 โควตาสุ่มทวงหนี้ในรอบนี้ (1-3 ไม้)
 
   int randomizeRecoveryQuota({int? fixedForTest}) {
-    maxRecoveryStepsThisCycle = 1;
-    return 1;
+    if (fixedForTest != null) {
+      maxRecoveryStepsThisCycle = fixedForTest;
+      return maxRecoveryStepsThisCycle;
+    }
+    // สุ่มทวง 1-3 ตา ด้วยความน่าจะเป็นถ่วงน้ำหนัก (Weighted Random):
+    // 50% = 1 ไม้ (ทวงไม้เดียวถ้าพลาดถอยทันที ปลอดภัยสูงสุด ตัดวงจรหนี้บวม 85%)
+    // 35% = 2 ไม้ (ทวง 2 ไม้)
+    // 15% = 3 ไม้ (ทวงเต็ม 3 ไม้ เฉพาะรอบที่สุ่มได้ 15%)
+    final int roll = Random().nextInt(100);
+    int quota;
+    if (roll < 50) {
+      quota = 1;
+    } else if (roll < 85) {
+      quota = 2;
+    } else {
+      quota = 3;
+    }
+    // ใน Cycle 1: Base bet แพ้ 1 ตาแล้ว ดังนั้นทวงได้สูงสุดไม่เกิน 2 ไม้ เพื่อไม่ให้แพ้เกิน 3 ตาติด
+    if (currentRecoveryCycle == 1 && quota > 2) {
+      quota = 2;
+    }
+    maxRecoveryStepsThisCycle = quota;
+    return maxRecoveryStepsThisCycle;
   }
 
   int recoveryLossStreak = 0; // 🛑 Recovery-specific consecutive loss counter (does NOT reset upon entering observation)
@@ -2408,26 +2429,21 @@ class OverlayButtonsViewModel with ChangeNotifier {
               );
             }
           } else {
-            // 🚨 BASE BET LOST:
-            state.consecutiveLossesStreak++;
+            // 🛑 BASE BET LOST:
+            // คำสั่งผู้ใช้: "ปกติ แพ้ทวง แพ้ทวง แพ้ กลับ Base bet"
+            // เมื่อเดิน Base Bet แพ้ ให้เข้าสู่การทวงหนี้ทันที (ไม้ที่ 1)
+            // (ยกเว้นกรณีที่ยังอยู่ในช่วงดูเชิง 15-25 ตา ซึ่งถูกนับถอยหลังไปแล้วข้างบน)
+            state.recoveryStepInCycle = 1;
+            state.consecutiveLossesStreak = 1;
             state.isLossStreakBaseBetLocked = false;
             state.observationRoundsRemaining = 0;
             state.currentRecoveryCycle = 1;
-            
-            if (state.consecutiveLossesStreak >= 3) {
-               final int obsRounds = 3 + Random().nextInt(3); // 3, 4, 5
-               state.observationRoundsRemaining = obsRounds;
-               state.isLossStreakBaseBetLocked = true;
-               transitionRecoveryState(mode, RecoveryState.observation,
-                   reason: 'Lost 3 base bets in a row -> wait $obsRounds rounds before recovery');
-               debugPrint(
-                 '🚨 [แพ้ 3 ตาติด] [${mode.displayName}] เข้าสู่ช่วงรอดูเชิง $obsRounds ตา (3-5 ตา) ก่อนเริ่มทวงหนี้!'
-               );
-            } else {
-               debugPrint(
-                 '⚠️ [แพ้ Base Bet] [${mode.displayName}] แพ้ติดกัน ${state.consecutiveLossesStreak}/3 ตา -> รอให้ครบ 3 ตาก่อนทวง'
-               );
-            }
+            state.randomizeRecoveryQuota();
+            transitionRecoveryState(mode, RecoveryState.recoveryGate,
+                reason: 'Normal Base Bet lost -> immediate recovery step 1 (Quota: ${state.maxRecoveryStepsThisCycle} steps)');
+            debugPrint(
+              '⚡ [แพ้ทวง 🎯 ไม้ 1/${state.maxRecoveryStepsThisCycle}] [${mode.displayName}] แพ้ Base Bet -> สุ่มโควตาทวง ${state.maxRecoveryStepsThisCycle} ไม้ เริ่มไม้ที่ 1!',
+            );
           }
 
 

@@ -1897,7 +1897,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
       final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
       final roundCoin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(mode);
       final double roundFloor = getFloorBetForMode(mode, coinType: roundCoin);
-      final double currentFloorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[mode] ?? roundFloor;
+      // 🛡️ Option 2: Dynamic Base Bet with Floor Guard (balance / 10,000 clamped to roundFloor)
+      final double dynamicBase = mode.calculateBaseBet(currentBalance, roundFloor, coin: roundCoin);
+      state.lockedBaseBet = dynamicBase;
+      _lockedBaseBetByMode[mode] = dynamicBase;
+      final double currentFloorBet = dynamicBase;
 
       // 🎯 Centralized Recovery Gate:
       // Preliminary check for OmniMatrix input (isRecoveryRound):
@@ -3636,16 +3640,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<double> _calculateDynamicBaseBet({GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
-    if (state.lockedBaseBet != null && state.lockedBaseBet! > 0.00000001) {
-      return state.lockedBaseBet!;
-    }
-    if (_lockedBaseBetByMode[targetMode] != null && _lockedBaseBetByMode[targetMode]! > 0.00000001) {
-      return _lockedBaseBetByMode[targetMode]!;
-    }
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
     final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(targetMode);
     final double defaultFloor = getFloorBetForMode(targetMode, coinType: coin);
     final double currentBalance = await _getBalanceDouble(mode: targetMode);
+    // 🛡️ Option 2: Dynamic แบบจำกัดขั้นต่ำ (Floor Guard)
+    // คำนวณ balance / 10,000 แต่หากพอร์ตเล็กลงจะไม่ให้ต่ำกว่า Floor ขั้นต่ำของเหรียญนั้นๆ
     final double calculated = targetMode.calculateBaseBet(currentBalance, defaultFloor, coin: coin);
     state.lockedBaseBet = calculated;
     _lockedBaseBetByMode[targetMode] = calculated;

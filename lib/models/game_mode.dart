@@ -65,9 +65,9 @@ extension GameModeExtension on GameMode {
         final double calculated = balance / 10000.0;
         return max(calculated, minFloor);
       case GameMode.mines:
-        final double minMinesFloor = floorLimit != null && floorLimit > 0.00001
-            ? floorLimit
-            : 0.00001;
+        final double minMinesFloor = floorLimit != null && floorLimit > 0
+            ? max(floorLimit, defaultFloor)
+            : defaultFloor;
         final double calculated = balance / 10000.0;
         return max(calculated, minMinesFloor);
     }

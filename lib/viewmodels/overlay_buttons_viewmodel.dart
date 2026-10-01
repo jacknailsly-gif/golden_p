@@ -3840,19 +3840,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       '🛡️ [LEAN RECOVERY SIZING 💎] [${targetMode.displayName}] Debt: ${debtToEscalate.toStringAsFixed(8)} + Surplus(2x Base): ${baseSurplus.toStringAsFixed(8)} -> Target Profit: ${(debtToEscalate + surplusProfitMargin).toStringAsFixed(8)}',
     );
 
-        // 🛡️ UNCAPPED FRACTIONAL RECOVERY (ระบบทวงหนี้แบบซอยเศษส่วน ยืดหยุ่น ไร้เพดานตายตัว)
-    // - ไม่มีการบังคับล้างหนี้ทิ้ง (No Cut-Loss)
-    // - ยิ่งหนี้ก้อนใหญ่ ยิ่งซอยแบ่งทวงหลายไม้ เพื่อไม่ให้เบททบจนล้นกระเป๋า
-    double divisor = 1.0;
-    
-    // คำนวณความเสี่ยงจากยอดหนี้เทียบกับพอร์ตจริง
-    if (debtToEscalate > currentBalance * 0.02) divisor = 4.0;
-    if (debtToEscalate > currentBalance * 0.05) divisor = 10.0;
-    if (debtToEscalate > currentBalance * 0.15) divisor = 20.0;
-    if (debtToEscalate > currentBalance * 0.30) divisor = 50.0;
-    if (debtToEscalate > currentBalance * 0.50) divisor = 100.0;
-
-    double targetProfit = (debtToEscalate / divisor) + surplusProfitMargin;
+    // 🎯 FULL 100% RECOVERY: ทวงหนี้เต็ม 100% ในไม้เดียวจบ ชนะไม้เดียวหนี้หมดเกลี้ยง (ตามคำสั่งผู้ใช้)
+    double targetProfit = debtToEscalate + surplusProfitMargin;
     double requiredBet = targetProfit / pRate;
 
     // ต้องไม่เกินยอดเงินคงเหลือจริงในบัญชี (ป้องกัน Error ยอดเงินไม่พอ)

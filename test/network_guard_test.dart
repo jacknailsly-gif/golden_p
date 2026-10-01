@@ -70,10 +70,13 @@ void main() {
       expect(isWifi, isFalse);
     });
 
-    test('disableWifi invokes native channel successfully', () async {
+    test('disableWifi invokes native channel successfully on physical device', () async {
       bool disableCalled = false;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+        if (methodCall.method == 'isEmulator') {
+          return false; // Physical device
+        }
         if (methodCall.method == 'disableWifi') {
           disableCalled = true;
           return true;
@@ -84,6 +87,25 @@ void main() {
       final bool res = await NetworkGuardService.disableWifi();
       expect(res, isTrue);
       expect(disableCalled, isTrue);
+    });
+
+    test('Emulator bypass: disableWifi returns true immediately without calling native channel', () async {
+      bool disableCalled = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+        if (methodCall.method == 'isEmulator') {
+          return true; // Emulator!
+        }
+        if (methodCall.method == 'disableWifi') {
+          disableCalled = true;
+          return true;
+        }
+        return null;
+      });
+
+      final bool res = await NetworkGuardService.disableWifi();
+      expect(res, isTrue);
+      expect(disableCalled, isFalse, reason: 'Must not call disableWifi on emulator');
     });
 
     test('openWifiSettings invokes native channel successfully', () async {

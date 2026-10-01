@@ -53,17 +53,20 @@ class _SplashViewState extends State<SplashView> with TickerProviderStateMixin {
       });
     }
 
-    // 🛡️ ตรวจสอบการเชื่อมต่อ Wi-Fi บน Android เครื่องจริง (Emulator ข้ามได้)
-    bool canProceed = await NetworkGuardService.canProceed();
-    if (!canProceed) {
-      // สั่งปิด Wi-Fi ทันทีอัตโนมัติ
-      await NetworkGuardService.disableWifi();
-      await Future.delayed(const Duration(milliseconds: 300));
-      canProceed = await NetworkGuardService.canProceed();
-    }
-    if (!canProceed && mounted) {
-      _showWifiBlockedDialog();
-      return;
+    // 🛡️ ตรวจสอบการเชื่อมต่อ Wi-Fi บน Android เครื่องจริง (Emulator ข้ามได้ 100%)
+    final bool isEmu = await NetworkGuardService.isEmulator();
+    if (!isEmu) {
+      bool canProceed = await NetworkGuardService.canProceed();
+      if (!canProceed) {
+        // สั่งปิด Wi-Fi ทันทีอัตโนมัติบนเครื่องจริง
+        await NetworkGuardService.disableWifi();
+        await Future.delayed(const Duration(milliseconds: 300));
+        canProceed = await NetworkGuardService.canProceed();
+      }
+      if (!canProceed && mounted) {
+        _showWifiBlockedDialog();
+        return;
+      }
     }
 
     await Future.delayed(const Duration(milliseconds: 800));

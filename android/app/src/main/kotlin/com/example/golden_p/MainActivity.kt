@@ -134,6 +134,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun notifyFlutterWifiChanged(isBlocked: Boolean) {
+        if (checkIsEmulator() && isBlocked) return // 🛡️ บน Emulator ไม่ส่ง event บล็อก Wi-Fi
         runOnUiThread {
             try {
                 methodChannel?.invokeMethod("onWifiStateChanged", isBlocked)
@@ -149,8 +150,9 @@ class MainActivity : FlutterActivity() {
         val device = Build.DEVICE.lowercase()
         val product = Build.PRODUCT.lowercase()
         val hardware = Build.HARDWARE.lowercase()
+        val board = Build.BOARD.lowercase()
 
-        return (brand.startsWith("generic") && device.startsWith("generic"))
+        val isBasicEmu = (brand.startsWith("generic") && device.startsWith("generic"))
                 || fingerprint.startsWith("generic")
                 || fingerprint.startsWith("unknown")
                 || hardware.contains("goldfish")
@@ -160,6 +162,7 @@ class MainActivity : FlutterActivity() {
                 || model.contains("android sdk built for x86")
                 || manufacturer.contains("genymotion")
                 || manufacturer.contains("ldplayer")
+                || manufacturer.contains("changwan")
                 || model.contains("ldplayer")
                 || hardware.contains("ttvm")
                 || product.contains("cancro")
@@ -170,13 +173,40 @@ class MainActivity : FlutterActivity() {
                 || product.contains("vbox86p")
                 || product.contains("emulator")
                 || product.contains("simulator")
-                || Build.BOARD.lowercase().contains("nox")
+                || board.contains("nox")
                 || hardware.contains("nox")
                 || product.contains("nox")
                 || hardware.contains("vbox86")
+                || model.contains("bluestacks")
+                || manufacturer.contains("bluestacks")
+                || hardware.contains("bluestacks")
+
+        if (isBasicEmu) return true
+
+        // File-based emulator detection (qemu, nox, bluestacks, ldplayer pipes)
+        val emuFiles = listOf(
+            "/dev/socket/qemud",
+            "/dev/qemu_pipe",
+            "/system/bin/nox-prop",
+            "/system/bin/androVM-prop",
+            "/system/bin/microvirtd",
+            "/system/lib/libc_orig.so",
+            "/system/bin/ttVM-prop",
+            "/data/data/com.vphone.launcher"
+        )
+        for (path in emuFiles) {
+            try {
+                if (java.io.File(path).exists()) return true
+            } catch (_: Exception) {}
+        }
+
+        return false
     }
 
     private fun checkIsWifiConnected(): Boolean {
+        if (checkIsEmulator()) {
+            return false // 🛡️ บน Emulator ให้ถือว่าผ่าน ไม่นับว่ามี Wi-Fi ต้องห้าม เพื่อให้บอททำงานได้ตามปกติ
+        }
         return try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             if (cm != null) {

@@ -1479,6 +1479,114 @@ class OverlayButtonsViewModel with ChangeNotifier {
     return false;
   }
 
+  /// 🎯 คำสั่งผู้ใช้: สำหรับ Mine ให้เลื่อนขึ้นให้ปุ่ม Start ในเว็ปตรงกับ Marker M0
+  /// (สำหรับ Tower จะไม่มีการเลื่อนขึ้นเด็ดขาด มีเพียงแค่ Refresh เท่านั้น)
+  Future<void> _alignMineStartWithM0({GameMode? mode}) async {
+    final targetMode = mode ?? _activeGameMode;
+    if (targetMode != GameMode.mines) {
+      debugPrint('🏰 [ALIGN M0] Target mode is not Mines (${targetMode.displayName}) - Skipping alignment per user directive');
+      return;
+    }
+    final controller = getWebViewController(targetMode);
+    if (controller == null) return;
+
+    final buttonList = getButtons(targetMode);
+    final m0Button = buttonList.firstWhere(
+      (b) => b.id == 'M0',
+      orElse: () => buttonList.first,
+    );
+    if (m0Button.position == Offset.zero) {
+      debugPrint('⚠️ [ALIGN M0] Marker M0 position is (0,0), cannot align');
+      return;
+    }
+
+    final double centerY = m0Button.position.dy + 24.0;
+    final double scale = _webViewTextZoom / 100.0;
+    final double targetM0CenterY = (centerY - _webViewOffset.dy) / scale;
+
+    debugPrint('🎯 [ALIGN M0] [${targetMode.displayName}] Target M0 Center Y in WebView: $targetM0CenterY');
+
+    // Run alignment script up to 3 passes to ensure layout is settled
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        final dynamic result = await controller.evaluateJavascript(source: """
+          (function(targetY) {
+            let btn = null;
+            const candidateSelectors = [
+              '#start_game', '#start', '#bet_button', '#btn_start', '#play_button',
+              'button#start', 'button#bet', '.btn-start', '.start-btn', '.btn-bet',
+              'input#start', 'input#start_game', 'a#start_game', 'button.start-game',
+              'button[type="submit"]', 'button.btn-primary', 'button.btn-success'
+            ];
+            for (let s of candidateSelectors) {
+              let el = document.querySelector(s);
+              if (el) {
+                let r = el.getBoundingClientRect();
+                if (r.width > 20 && r.height > 15) {
+                  btn = el;
+                  break;
+                }
+              }
+            }
+            if (!btn) {
+              let allButtons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div'));
+              for (let el of allButtons) {
+                let txt = (el.innerText || el.textContent || el.value || '').trim().toLowerCase();
+                if (txt === 'start' || txt === 'start game' || txt === 'bet' || txt === 'play' || txt === 'start bet') {
+                  let r = el.getBoundingClientRect();
+                  if (r.width > 20 && r.height > 15) {
+                    btn = el;
+                    break;
+                  }
+                }
+              }
+            }
+            if (!btn) {
+              return { success: false, reason: 'start_button_not_found' };
+            }
+            let rect = btn.getBoundingClientRect();
+            let btnCenterY = rect.top + (rect.height / 2);
+            let diffY = btnCenterY - targetY;
+            if (Math.abs(diffY) > 3) {
+              if (window.scrollBy) {
+                window.scrollBy(0, diffY);
+              } else {
+                document.documentElement.scrollTop += diffY;
+                document.body.scrollTop += diffY;
+              }
+            }
+            let finalRect = btn.getBoundingClientRect();
+            let finalCenterY = finalRect.top + (finalRect.height / 2);
+            return {
+              success: true,
+              initialBtnCenterY: btnCenterY,
+              targetY: targetY,
+              diffY: diffY,
+              finalCenterY: finalCenterY,
+              finalDiff: Math.abs(finalCenterY - targetY)
+            };
+          })($targetM0CenterY)
+        """);
+
+        debugPrint('🎯 [ALIGN M0 RESULT] Attempt \${attempt + 1}: \$result');
+        if (result is Map && result['success'] == true) {
+          final num finalDiff = result['finalDiff'] ?? 0;
+          if (finalDiff <= 5) {
+            debugPrint('✅ [ALIGN M0 SUCCESS] Start button precisely aligned with M0 (diff: \$finalDiff px)');
+            break;
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ [ALIGN M0 ERROR] \$e');
+      }
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+  }
+
+  @visibleForTesting
+  Future<void> testAlignMineStartWithM0({GameMode? mode}) =>
+      _alignMineStartWithM0(mode: mode);
+
   Future<void> _executeSequence(int runToken, {GameMode mode = GameMode.towers}) async {
     final state = getState(mode);
     while (!_shouldAbort(runToken, mode: mode) && !_isSmartMode) {
@@ -1631,6 +1739,46 @@ class OverlayButtonsViewModel with ChangeNotifier {
           await Future.delayed(const Duration(seconds: 1));
         }
         if (_shouldAbort(runToken, mode: mode)) break;
+
+        // 🎯 คำสั่งผู้ใช้:
+        // 1. หน้า Tower: จะไม่มีการเลื่อนขึ้นเด็ดขาด เพียงแค่ Refresh เท่านั้น
+        // 2. หน้า Mine: Refresh หน้าเว็บ แล้วเลื่อนขึ้นให้ปุ่ม Start ในเว็บตรงกับ Marker M0
+        final controller = getWebViewController(mode);
+        if (controller != null) {
+          debugPrint('🔄 [24/7 RESUME] [${mode.displayName}] ครบกำหนดพัก 2-3 ชม. ทำการ Refresh หน้าเว็บ...');
+          await controller.reload();
+          await Future.delayed(Duration(milliseconds: (6000 / _speedMultiplier).round()));
+        }
+
+        if (_shouldAbort(runToken, mode: mode)) break;
+
+        if (mode == GameMode.mines) {
+          debugPrint('💎 [24/7 RESUME] [${mode.displayName}] เลื่อนหน้าเว็บให้ปุ่ม Start ตรงกับ Marker M0...');
+          await _alignMineStartWithM0(mode: mode);
+        } else {
+          debugPrint('🏰 [24/7 RESUME] [${mode.displayName}] Tower: Refresh หน้าเว็บเท่านั้น ไม่มีการเลื่อนขึ้นตามคำสั่งผู้ใช้');
+        }
+
+        // รีเซ็ตฐานข้อมูลเซสชันใหม่หลังพักเสร็จ
+        double curBalance = await _getBalanceDouble(mode: mode);
+        if (curBalance <= 0.00000001) curBalance = state.lastSettledBalance;
+        state.sessionStartBalance = curBalance;
+        state.sessionProfitBaseline = curBalance;
+        state.sessionMaxBalance = curBalance;
+        state.protectedPrincipal = curBalance * 0.97;
+        state.resetDebt();
+        state.lastRoundWasWin = null;
+        state.consecutiveLossesStreak = 0;
+        state.observationRoundsRemaining = 0;
+        state.isLossStreakBaseBetLocked = false;
+
+        final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
+        if (analyzer != null) {
+          try {
+            analyzer.resetSessionProfit(mode: mode);
+          } catch (_) {}
+        }
+
         debugPrint(
           '[SMART FLOW] 🚀 [${mode.displayName}] 2-3 Hour Break completed! Resuming automated betting with 0.000% baseline.',
         );

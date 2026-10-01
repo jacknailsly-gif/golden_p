@@ -18,6 +18,10 @@ class NetworkGuardService {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onWifiStateChanged') {
         final bool isBlocked = call.arguments as bool? ?? false;
+        if (await isEmulator()) {
+          isWifiBlockedNotifier.value = false;
+          return;
+        }
         isWifiBlockedNotifier.value = isBlocked;
         if (isBlocked) {
           debugPrint('[NETWORK GUARD] Native event: Wi-Fi detected! Triggering instant auto-disable...');
@@ -64,6 +68,7 @@ class NetworkGuardService {
   /// สั่งปิด Wi-Fi บนเครื่อง Android โดยตรง
   static Future<bool> disableWifi() async {
     if (!_isAndroid) return true;
+    if (await isEmulator()) return true; // 🛡️ บน Emulator ไม่ปิด Wi-Fi ให้ทำงานได้ปกติ 100%
     try {
       final bool? res = await _channel.invokeMethod<bool>('disableWifi');
       return res ?? false;
@@ -78,11 +83,18 @@ class NetworkGuardService {
 
   /// เริ่มระบบตรวจสอบ Wi-Fi ต่อเนื่องตลอดเวลาที่แอปเปิดทำงาน (User Directive ข้อ 1)
   /// "ในขณะที่เปิดแอป golden_p จะไม่สามารถเปิด Wifi ได้เช่นกัน"
-  /// ตรวจสอบทุก 300ms และสั่งปิด Wi-Fi ทันทีอัตโนมัติหากพบว่าถูกเปิด
+  /// ตรวจสอบทุก 300ms และสั่งปิด Wi-Fi ทันทีอัตโนมัติหากพบว่าถูกเปิด (เว้นแต่ Emulator)
   static void startContinuousMonitoring({Function(bool isBlocked)? onStatusChange}) {
     _initMethodChannelHandler();
     _monitorTimer?.cancel();
     _monitorTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
+      if (await isEmulator()) {
+        if (isWifiBlockedNotifier.value != false) {
+          isWifiBlockedNotifier.value = false;
+          onStatusChange?.call(false);
+        }
+        return;
+      }
       final bool allowed = await canProceed();
       final bool blocked = !allowed;
       if (isWifiBlockedNotifier.value != blocked) {

@@ -213,15 +213,56 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
           tooltip: 'Smart Mode',
         ),
 
-        // 🌟 24/7 Autonomous Continuous Mode Toggle
-        _buildSmallControl(
-          icon: viewModel.is24HourMode
-              ? Icons.all_inclusive_rounded
-              : Icons.hourglass_disabled_rounded,
-          color: viewModel.is24HourMode ? Colors.amberAccent : Colors.white60,
-          onTap: () => viewModel.toggle24HourMode(),
-          tooltip: viewModel.is24HourMode ? '24/7 Mode: ON (Non-stop)' : '24/7 Mode: OFF',
-        ),
+        // 🌟 24/7 Autonomous Continuous Mode Toggle / Countdown Timer during 2-3 hour break
+        if (viewModel.isBreakActiveFor(widget.gameMode))
+          Tooltip(
+            message: 'พัก 2-3 ชม. หลังได้กำไร (แตะเพื่อเริ่มทันที)',
+            child: GestureDetector(
+              onTap: () => viewModel.cancelBreak(mode: widget.gameMode),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                decoration: BoxDecoration(
+                  color: Colors.amberAccent.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.amberAccent.withValues(alpha: 0.8),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.timer_outlined,
+                      size: 13,
+                      color: Colors.amberAccent,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      viewModel.getBreakRemainingFormatted(widget.gameMode),
+                      style: const TextStyle(
+                        color: Colors.amberAccent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'monospace',
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else
+          _buildSmallControl(
+            icon: viewModel.is24HourMode
+                ? Icons.all_inclusive_rounded
+                : Icons.hourglass_disabled_rounded,
+            color: viewModel.is24HourMode ? Colors.amberAccent : Colors.white60,
+            onTap: () => viewModel.toggle24HourMode(),
+            tooltip: viewModel.is24HourMode ? '24/7 Mode: ON (Non-stop)' : '24/7 Mode: OFF',
+          ),
 
         // Visibility
         _buildSmallControl(
@@ -248,22 +289,6 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
             viewModel.setSpeedMultiplier(nextSpeed);
           },
           tooltip: 'Speed',
-        ),
-
-        // Mode Switch (V17.0)
-        _buildSmallControl(
-          icon: viewModel.recoveryMode == 1
-              ? Icons.shield_outlined
-              : Icons.bolt_rounded,
-          color: viewModel.recoveryMode == 1
-              ? Colors.tealAccent
-              : Colors.orangeAccent,
-          onTap: () {
-            viewModel.recoveryMode = viewModel.recoveryMode == 1 ? 2 : 1;
-          },
-          tooltip: viewModel.recoveryMode == 1
-              ? 'Mode 1: Risk Distribution'
-              : 'Mode 2: Profit Boost',
         ),
 
         // Recover Profit Level (Default Level 8: 48% on Mine, Level 7: 42% on Towers)

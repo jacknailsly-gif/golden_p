@@ -72,7 +72,7 @@ class _SecuritySettingsViewState extends State<SecuritySettingsView> {
                     trailing: Switch(
                       value: _is2faEnabled,
                       onChanged: _toggle2FA,
-                      activeColor: const Color(0xFF1A73E8),
+                      activeThumbColor: const Color(0xFF1A73E8),
                     ),
                   ),
                   const Divider(color: Color(0xFFEEEEEE), height: 32),

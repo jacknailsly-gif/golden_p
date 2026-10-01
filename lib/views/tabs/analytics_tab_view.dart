@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/game_mode.dart';
 import '../../viewmodels/sequence_analyzer_viewmodel.dart';
 import '../../viewmodels/overlay_buttons_viewmodel.dart';
 
@@ -12,13 +13,15 @@ class AnalyticsTabView extends StatefulWidget {
 
 class _AnalyticsTabViewState extends State<AnalyticsTabView> {
   final TextEditingController _tpController = TextEditingController();
+  GameMode? _lastMode;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final overlayVM = context.read<OverlayButtonsViewModel>();
-      _tpController.text = overlayVM.stopProfitPercent.toStringAsFixed(1);
+      _tpController.text = overlayVM.getStopProfitPercent(overlayVM.activeGameMode).toStringAsFixed(1);
+      _lastMode = overlayVM.activeGameMode;
     });
   }
 
@@ -39,6 +42,12 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
         final double profitLoss = viewModel.profitLossValue;
         final int maxLossStreak = viewModel.maxLossStreak;
         final String maxLossSequence = viewModel.maxLossSequence;
+        final currentMode = overlayVM.activeGameMode;
+
+        if (_lastMode != currentMode) {
+          _lastMode = currentMode;
+          _tpController.text = overlayVM.getStopProfitPercent(currentMode).toStringAsFixed(1);
+        }
 
         return Scaffold(
           backgroundColor: const Color(0xFF0F1423),
@@ -66,7 +75,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
               const SizedBox(height: 24),
               _buildPerformanceCards(totalPredictions, wins, losses, profitLoss, maxLossStreak, maxLossSequence),
               const SizedBox(height: 24),
-              _buildStopProfitSection(overlayVM),
+              _buildStopProfitSection(overlayVM, currentMode),
               const SizedBox(height: 24),
               _buildRecoveryProfitLevelSection(overlayVM),
               const SizedBox(height: 24),
@@ -259,14 +268,15 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
     );
   }
 
-  Widget _buildStopProfitSection(OverlayButtonsViewModel overlayVM) {
+  Widget _buildStopProfitSection(OverlayButtonsViewModel overlayVM, GameMode mode) {
+    final bool isEnabled = overlayVM.isStopProfitEnabledFor(mode);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: overlayVM.isStopProfitEnabled ? const Color(0xFF10B981) : Colors.white.withValues(alpha: 0.05),
+          color: isEnabled ? const Color(0xFF10B981) : Colors.white.withValues(alpha: 0.05),
         ),
       ),
       child: Column(
@@ -275,13 +285,13 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.flag_circle, color: Color(0xFF10B981), size: 24),
-                  SizedBox(width: 8),
+                  const Icon(Icons.flag_circle, color: Color(0xFF10B981), size: 24),
+                  const SizedBox(width: 8),
                   Text(
-                    'Stop Profit Target',
-                    style: TextStyle(
+                    'Stop Profit Target [${mode.displayName}]',
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -290,19 +300,19 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 ],
               ),
               Switch(
-                value: overlayVM.isStopProfitEnabled,
+                value: isEnabled,
                 onChanged: (val) {
-                  overlayVM.setStopProfitEnabled(val);
+                  overlayVM.setStopProfitEnabled(val, mode: mode);
                 },
-                activeColor: const Color(0xFF10B981),
+                activeThumbColor: const Color(0xFF10B981),
               ),
             ],
           ),
-          if (overlayVM.isStopProfitEnabled) ...[
+          if (isEnabled) ...[
             const SizedBox(height: 16),
-            const Text(
-              'Target Profit (%)',
-              style: TextStyle(
+            Text(
+              'Target Profit (%) for ${mode.displayName}',
+              style: const TextStyle(
                 color: Color(0xFF94A3B8),
                 fontSize: 12,
               ),
@@ -328,7 +338,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                     onSubmitted: (value) {
                       double? parsed = double.tryParse(value);
                       if (parsed != null && parsed > 0) {
-                        overlayVM.setStopProfitPercent(parsed);
+                        overlayVM.setStopProfitPercent(parsed, mode: mode);
                       }
                     },
                   ),
@@ -338,9 +348,9 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                   onPressed: () {
                     double? parsed = double.tryParse(_tpController.text);
                     if (parsed != null && parsed > 0) {
-                      overlayVM.setStopProfitPercent(parsed);
+                      overlayVM.setStopProfitPercent(parsed, mode: mode);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Saved target: $parsed%')),
+                        SnackBar(content: Text('Saved ${mode.displayName} target: $parsed%')),
                       );
                     }
                   },
@@ -556,22 +566,21 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
             child: ElevatedButton.icon(
               onPressed: () async {
                 final path = await logger.exportNow();
-                if (context.mounted) {
-                  if (path != null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('✅ Exported to: $path'),
-                        backgroundColor: const Color(0xFF10B981),
-                      ),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('⚠️ No data to export or storage error.'),
-                        backgroundColor: Color(0xFFF59E0B),
-                      ),
-                    );
-                  }
+                if (!mounted) return;
+                if (path != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ Exported to: $path'),
+                      backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('⚠️ No data to export or storage error.'),
+                      backgroundColor: Color(0xFFF59E0B),
+                    ),
+                  );
                 }
               },
               icon: const Icon(Icons.file_download, size: 18),

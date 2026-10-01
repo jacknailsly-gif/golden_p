@@ -9,6 +9,7 @@ class DynamicRiskManager {
 
   double _totalAccumulatedDebt = 0.0;
   double _sessionStartBalance = 0.0;
+  double get sessionStartBalance => _sessionStartBalance;
 
   DynamicRiskManager({
     this.baseBetFloor = 0.000009,

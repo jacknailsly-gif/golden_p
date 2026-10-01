@@ -8,6 +8,7 @@ import 'package:golden_p/models/history_entry.dart';
 import 'package:golden_p/models/webview_tab.dart';
 import 'package:golden_p/models/game_mode.dart';
 import 'package:golden_p/widgets/overlay_buttons_panel.dart';
+import 'package:golden_p/services/user_agent_service.dart';
 
 // ─── Midnight Azure Dark Theme Colors ───
 class ChromeColors {
@@ -586,9 +587,18 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
       child: IndexedStack(
         index: _currentTabIndex,
         children: _tabs.map((t) {
-          return InAppWebView(
+          return Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerUp: (_) {
+              viewModel.updateBalance();
+            },
+            child: InAppWebView(
             initialUrlRequest: URLRequest(url: WebUri(t.url)),
+            initialUserScripts: UserAgentService.initialUserScripts,
             initialSettings: InAppWebViewSettings(
+              userAgent: UserAgentService.currentUserAgent,
+              applicationNameForUserAgent: '',
+              requestedWithHeaderOriginAllowList: <String>{},
               useShouldOverrideUrlLoading: true,
               useWideViewPort: false,
               loadWithOverviewMode: false,
@@ -625,14 +635,6 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
               if (t == _currentTab) {
                 _bindActiveTabControllers();
               }
-
-              // Add a handler to receive click events from JavaScript
-              controller.addJavaScriptHandler(
-                handlerName: 'webViewClick',
-                callback: (args) {
-                  viewModel.updateBalance();
-                },
-              );
             },
             onLoadStart: (controller, url) {
               if (url != null && mounted) {
@@ -672,22 +674,16 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                 );
                 final zoom = overlayVM.webViewTextZoom;
 
-                // Auto-start bot on launch for Towers
+                // Auto-set difficulty on launch for Towers (Do not auto-start bot per user directive)
                 if (!_autoStarted &&
                     widget.gameMode == GameMode.towers &&
                     t.url.contains('faucetpay.io/play/towers')) {
                   _autoStarted = true;
-                  debugPrint('[AUTO-START] 🚀 Auto-starting Towers bot in 5 seconds...');
+                  debugPrint('[AUTO-SETUP] 🔧 Ensuring Towers difficulty is Medium (Level 7: 42%) in 5 seconds...');
                   Future.delayed(const Duration(seconds: 5), () async {
                     if (mounted) {
-                      debugPrint('[AUTO-START] 🔧 Ensuring Towers difficulty is Medium (Level 7: 42%)...');
                       await overlayVM.ensureDifficulty(mode: GameMode.towers);
-                      
-                      await Future.delayed(const Duration(seconds: 2));
-                      if (mounted && !overlayVM.isRunningForMode(GameMode.towers)) {
-                        debugPrint('[AUTO-START] 🟢 Executing Auto-Start for Towers!');
-                        overlayVM.startSequence(mode: GameMode.towers);
-                      }
+                      debugPrint('[AUTO-SETUP] ✅ Towers difficulty ensured to Medium.');
                     }
                   });
                 }
@@ -696,19 +692,14 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                 controller.evaluateJavascript(
                   source:
                       """
-                  if (!window.__goldenPClickHookInstalled) {
-                    window.__goldenPClickHookInstalled = true;
-                    window.addEventListener('click', function() {
-                      window.flutter_inappwebview.callHandler('webViewClick');
-                    });
-                  }
                   var scale = $zoom / 100;
                   var meta = document.querySelector('meta[name="viewport"]');
-                  if (meta) meta.remove();
-                  var m = document.createElement('meta');
-                  m.name = 'viewport';
-                  m.content = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, shrink-to-fit=no';
-                  document.head.appendChild(m);
+                  if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
+                  }
+                  meta.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, shrink-to-fit=no');
                   // Optional: Disable scrolling to lock layout
                   document.body.style.overscrollBehavior = 'none';
                   document.documentElement.style.overscrollBehavior = 'none';
@@ -716,6 +707,11 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                   // Clean up old CSS zoom if any from previous versions
                   var oldStyle = document.getElementById('golden-zoom-style');
                   if (oldStyle) oldStyle.remove();
+
+                  // 🛡️ Purge WebView Bridge signature if injected by plugin
+                  try {
+                    delete window.flutter_inappwebview;
+                  } catch(e) {}
                 """,
                 );
               }
@@ -735,6 +731,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                 });
               }
             },
+          ),
           );
         }).toList(),
       ),

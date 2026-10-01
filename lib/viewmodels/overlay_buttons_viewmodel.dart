@@ -99,6 +99,8 @@ class GameModeSessionState {
   double? lowestObservedBet;
   int consecutiveLossesStreak = 0;
   int peakLossStreak = 0;
+  int roundsSinceMicroRest = 0;
+  int nextMicroRestTarget = 25;
   bool isLossStreakBaseBetLocked = false;
   int observationRoundsRemaining = 0; // 🔭 จำนวนไม้สังเกตการณ์แนวโน้มระเบิดหลังแพ้ครบ 3 ตา (15-25 ตา นับจากรอบแพ้สุดท้าย)
   RecoveryState recoveryState = RecoveryState.normal;
@@ -273,9 +275,10 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คัดกรองเฉพาะภาวะวิกฤติตลาดผันผวนสูงลิ่ว (Chaos > 0.70) หรือ Hold Fire
+    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คำสั่งผู้ใช้: "ปลดล็อกความปลอดภัยของเงินทุน"
+    // ปลดล็อกไม่บล็อกด้วยค่า Chaos (ปลดล็อกความปลอดภัยของเงินทุน) แต่ยังคงเคารพคำสั่ง holdFire
     if (omniResult != null) {
-      if (omniResult.recoveryClearance == RecoveryClearance.holdFire || omniResult.chaosIndex > 0.70) {
+      if (omniResult.recoveryClearance == RecoveryClearance.holdFire) {
         return false;
       }
     }
@@ -378,9 +381,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
   String? _recordingButtonId;
   late SharedPreferences _prefs;
 
-  // --- Stop Loss / Stop Profit / Safety ---
-  bool _isStopProfitEnabled = false;
-  double _stopProfitPercent = 10.0;
+  // --- Stop Loss / Stop Profit / Safety (Mode-Isolated) ---
+  final Map<GameMode, bool> _isStopProfitEnabledByMode = {
+    GameMode.towers: false,
+    GameMode.mines: false,
+  };
+  final Map<GameMode, double> _stopProfitPercentByMode = {
+    GameMode.towers: 10.0,
+    GameMode.mines: 10.0,
+  };
   bool _is24HourMode = true; // 🌟 24/7 Autonomous Continuous Non-Stop Mode (Default ON)
   int _maxM5Steps = 5;
   String _stopReason = '';
@@ -391,14 +400,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
   Timer? _slCheckTimer;
   bool _isDisposed = false;
-  bool _nativeClickPassthrough = false;
-
-  final List<bool> _recentHighConfSuccess = [];
-  final double _confThreshold = 70.0;
+  final bool _nativeClickPassthrough = false;
 
   DateTime? _sessionStartTime;
+  DateTime? get sessionStartTime => _sessionStartTime;
+
   bool _isBreakActive = false;
-  int _breakMinutesRemaining = 0;
+
+  final Map<GameMode, DateTime?> _breakEndTimeByMode = {};
+  Timer? _breakCountdownTimer;
 
   InAppWebViewController? _webViewController;
   Offset _webViewOffset = Offset.zero;
@@ -422,11 +432,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
   Offset getControlPosition(GameMode mode) =>
       _controlPositionsByMode[mode] ?? const Offset(20, 100);
-  Offset get controlPosition => getControlPosition(_activeGameMode);
+  Offset get controlPosition => _controlPosition;
 
   bool isRunningForMode(GameMode mode) => getState(mode).isRunning;
   bool get isSequenceRunning => isRunningForMode(_activeGameMode);
   bool get isAnyRunning => _statesByMode.values.any((s) => s.isRunning);
+  bool get isRunning => _isRunning || isAnyRunning;
 
   InAppWebViewController? getWebViewController([GameMode? mode]) =>
       _webViewControllerByMode[mode ?? _activeGameMode] ?? _webViewController;
@@ -437,7 +448,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
   bool get isSequencePanelCollapsed => _isSequencePanelCollapsed;
   
   String? getActiveButtonId(GameMode mode) => getState(mode).activeButtonId;
-  String? get activeButtonId => getActiveButtonId(_activeGameMode);
+  String? get activeButtonId => _activeButtonId ?? getActiveButtonId(_activeGameMode);
   
   String? get draggingButtonId => _draggingButtonId;
   Map<String, int> get clickCounts => _clickCounts;
@@ -449,8 +460,13 @@ class OverlayButtonsViewModel with ChangeNotifier {
   bool get shouldAbsorbMainContent => isAnyRunning && !_nativeClickPassthrough;
   bool shouldAbsorbMainContentForMode(GameMode mode) => isRunningForMode(mode) && !_nativeClickPassthrough;
 
-  bool get isStopProfitEnabled => _isStopProfitEnabled;
-  double get stopProfitPercent => _stopProfitPercent;
+  bool isStopProfitEnabledFor([GameMode? mode]) =>
+      _isStopProfitEnabledByMode[mode ?? _activeGameMode] ?? false;
+  double getStopProfitPercent([GameMode? mode]) =>
+      _stopProfitPercentByMode[mode ?? _activeGameMode] ?? 10.0;
+
+  bool get isStopProfitEnabled => isStopProfitEnabledFor(_activeGameMode);
+  double get stopProfitPercent => getStopProfitPercent(_activeGameMode);
   bool get is24HourMode => _is24HourMode;
   int get maxM5Steps => _maxM5Steps;
   String get stopReason => _stopReason;
@@ -536,8 +552,66 @@ class OverlayButtonsViewModel with ChangeNotifier {
   }
 
   bool get isRecoveryUnlocked => getState(_activeGameMode).isRecoveryUnlocked;
-  bool get isBreakActive => _isBreakActive;
-  int get breakMinutesRemaining => _breakMinutesRemaining;
+  
+  bool isBreakActiveFor(GameMode mode) {
+    final endTime = _breakEndTimeByMode[mode];
+    if (endTime == null) return false;
+    if (DateTime.now().isAfter(endTime)) {
+      _breakEndTimeByMode[mode] = null;
+      return false;
+    }
+    return true;
+  }
+
+  bool get isBreakActive => _isBreakActive || isBreakActiveFor(_activeGameMode);
+
+  Duration getBreakRemainingDuration(GameMode mode) {
+    final endTime = _breakEndTimeByMode[mode];
+    if (endTime == null) return Duration.zero;
+    final diff = endTime.difference(DateTime.now());
+    return diff.isNegative ? Duration.zero : diff;
+  }
+
+  String getBreakRemainingFormatted(GameMode mode) {
+    final rem = getBreakRemainingDuration(mode);
+    if (rem == Duration.zero) return '00:00:00';
+    final hours = rem.inHours.toString().padLeft(2, '0');
+    final minutes = (rem.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (rem.inSeconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$seconds';
+  }
+
+  int get breakMinutesRemaining => getBreakRemainingDuration(_activeGameMode).inMinutes;
+
+  void cancelBreak({GameMode? mode}) {
+    final targetMode = mode ?? _activeGameMode;
+    _breakEndTimeByMode[targetMode] = null;
+    _isBreakActive = isBreakActiveFor(_activeGameMode);
+    notifyListeners();
+    debugPrint('[BREAK] ⏹️ Break manually cancelled for [${targetMode.displayName}]. Resuming normal operations.');
+  }
+
+  void _startBreakCountdownTimer() {
+    _breakCountdownTimer?.cancel();
+    _breakCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_isDisposed) {
+        timer.cancel();
+        return;
+      }
+      bool anyActive = false;
+      for (final mode in GameMode.values) {
+        if (isBreakActiveFor(mode)) {
+          anyActive = true;
+        }
+      }
+      if (!anyActive) {
+        timer.cancel();
+        _breakCountdownTimer = null;
+        _isBreakActive = false;
+      }
+      notifyListeners();
+    });
+  }
 
   // Recovery Mode
   int _recoveryMode = 1;
@@ -581,8 +655,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
     await loadButtonPositions();
     await loadSequenceFromStorage();
 
-    _isStopProfitEnabled = _prefs.getBool('tp_enabled') ?? false;
-    _stopProfitPercent = _prefs.getDouble('tp_percent') ?? 10.0;
+    final globalTpEnabled = _prefs.getBool('tp_enabled') ?? false;
+    final globalTpPercent = _prefs.getDouble('tp_percent') ?? 10.0;
+    for (final m in GameMode.values) {
+      _isStopProfitEnabledByMode[m] =
+          _prefs.getBool('tp_enabled_${m.storagePrefix}') ?? globalTpEnabled;
+      _stopProfitPercentByMode[m] =
+          _prefs.getDouble('tp_percent_${m.storagePrefix}') ?? globalTpPercent;
+    }
     _is24HourMode = _prefs.getBool('overlay_24hour_mode') ?? true;
     _maxM5Steps = _prefs.getInt('max_m5_steps') ?? 5;
 
@@ -642,8 +722,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
-  void setStopProfitEnabled(bool val) {
-    _isStopProfitEnabled = val;
+  void setStopProfitEnabled(bool val, {GameMode? mode}) {
+    final m = mode ?? _activeGameMode;
+    _isStopProfitEnabledByMode[m] = val;
+    _prefs.setBool('tp_enabled_${m.storagePrefix}', val);
     _prefs.setBool('tp_enabled', val);
     if (isAnyRunning) {
       _startPnLMonitor();
@@ -651,8 +733,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
-  void setStopProfitPercent(double val) {
-    _stopProfitPercent = val;
+  void setStopProfitPercent(double val, {GameMode? mode}) {
+    final m = mode ?? _activeGameMode;
+    _stopProfitPercentByMode[m] = val;
+    _prefs.setDouble('tp_percent_${m.storagePrefix}', val);
     _prefs.setDouble('tp_percent', val);
     if (isAnyRunning) {
       _startPnLMonitor();
@@ -734,12 +818,16 @@ class OverlayButtonsViewModel with ChangeNotifier {
           source:
               """
             var scale = $zoom / 100;
+            var contentStr = 'width=' + (window.screen.width / scale) + ', initial-scale=' + scale + ', maximum-scale=' + scale + ', minimum-scale=' + scale + ', user-scalable=no';
             var meta = document.querySelector('meta[name="viewport"]');
-            if (meta) meta.remove();
-            var m = document.createElement('meta');
-            m.name = 'viewport';
-            m.content = 'width=' + (window.screen.width / scale) + ', initial-scale=' + scale + ', maximum-scale=' + scale + ', minimum-scale=' + scale + ', user-scalable=no';
-            document.head.appendChild(m);
+            if (meta) {
+              meta.setAttribute('content', contentStr);
+            } else {
+              var m = document.createElement('meta');
+              m.name = 'viewport';
+              m.content = contentStr;
+              document.head.appendChild(m);
+            }
             window.dispatchEvent(new Event('resize'));
             
             var oldStyle = document.getElementById('golden-zoom-style');
@@ -972,11 +1060,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
               for (let inp of inputs) {
                 let nameOrId = (inp.name || inp.id || inp.placeholder || inp.getAttribute('aria-label') || '').toLowerCase();
                 if (nameOrId.includes('mine') || nameOrId.includes('bomb') || nameOrId.includes('count')) {
-                  inp.focus();
                   inp.value = '9';
                   inp.dispatchEvent(new Event('input', { bubbles: true }));
                   inp.dispatchEvent(new Event('change', { bubbles: true }));
-                  inp.blur();
+                  if (inp.blur) inp.blur();
                   return true;
                 }
               }
@@ -1169,8 +1256,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
 
     _slCheckCounter = 0;
+    final tpEnabled = isStopProfitEnabledFor(targetMode);
+    final tpPercent = getStopProfitPercent(targetMode);
     debugPrint(
-      '[START] 🚀 [${targetMode.displayName}] Sequence started | StopProfit: ${_isStopProfitEnabled ? "ON (${_stopProfitPercent.toStringAsFixed(4)}%)" : "OFF"} | SmartMode: $_isSmartMode',
+      '[START] 🚀 [${targetMode.displayName}] Sequence started | StopProfit: ${tpEnabled ? "ON (${tpPercent.toStringAsFixed(4)}%)" : "OFF"} | SmartMode: $_isSmartMode',
     );
     _startPnLMonitor();
     _sessionStartTime = DateTime.now();
@@ -1191,7 +1280,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
     _isRunning = isAnyRunning;
 
     _trainingDataLogger.endSession();
-    _isBreakActive = false;
+    _breakEndTimeByMode[targetMode] = null;
+    _isBreakActive = isBreakActiveFor(_activeGameMode);
     if (!isAnyRunning) {
       _stopPnLMonitor();
       _sessionStartTime = null;
@@ -1204,7 +1294,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
   void _startPnLMonitor() {
     _stopPnLMonitor();
-    if (_isStopProfitEnabled) {
+    if (_isStopProfitEnabledByMode.values.any((e) => e)) {
       _slCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (
         _,
       ) async {
@@ -1240,23 +1330,22 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
       final double pnl = analyzer.getProfitForMode(mode);
 
+      final isTpEnabled = isStopProfitEnabledFor(mode);
+      final targetPercent = getStopProfitPercent(mode);
+
       _slCheckCounter++;
       if (_slCheckCounter % 10 == 0) {
         debugPrint(
-          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${_stopProfitPercent.toStringAsFixed(4)}% | Enabled: $_isStopProfitEnabled',
+          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${targetPercent.toStringAsFixed(4)}% | Enabled: $isTpEnabled',
         );
       }
 
-      if (_isStopProfitEnabled && pnl >= _stopProfitPercent) {
-        if (!_is24HourMode) {
-          _stopReason =
-              '🌟 STOP PROFIT triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Target: +${_stopProfitPercent.toStringAsFixed(4)}%)';
-          debugPrint('[PnL MONITOR] 🛑 $_stopReason — FORCING IMMEDIATE HALT ALL MODES');
-          for (var m in GameMode.values) {
-            stopSequence(mode: m);
-          }
-          return;
-        }
+      if (isTpEnabled && pnl >= targetPercent && !isBreakActiveFor(mode)) {
+        await _handleStopProfitReached(
+          mode: mode,
+          pnl: pnl,
+          targetPercent: targetPercent,
+        );
       }
     }
   }
@@ -1269,12 +1358,58 @@ class OverlayButtonsViewModel with ChangeNotifier {
         runToken != state.runToken;
   }
 
+  Future<void> _handleStopProfitReached({
+    required GameMode mode,
+    required double pnl,
+    required double targetPercent,
+  }) async {
+    final state = getState(mode);
+    final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
+
+    // 1. Calculate randomized 2-3 hours break (120 to 180 minutes)
+    final int breakMinutes = 120 + Random().nextInt(61);
+    final Duration breakDuration = Duration(minutes: breakMinutes);
+    final endTime = DateTime.now().add(breakDuration);
+    _breakEndTimeByMode[mode] = endTime;
+    _isBreakActive = true;
+
+    // 2. Reset profit tracking to 0.000% immediately for this mode & coin
+    String? sessionCoin;
+    if (analyzer != null) {
+      sessionCoin = analyzer.getCoinTypeForMode(mode);
+      analyzer.resetProfitTracking(mode: mode, coinType: sessionCoin);
+    }
+
+    // 3. Reset session baseline balances and milestones
+    double curBalance = await _getBalanceDouble(mode: mode);
+    if (curBalance <= 0.00000001) {
+      curBalance = state.lastSettledBalance;
+    }
+    state.profitMilestonesAchieved++;
+    state.sessionProfitBaseline = curBalance;
+    state.sessionStartBalance = curBalance;
+    state.sessionMaxBalance = curBalance;
+    state.protectedPrincipal = curBalance * 0.97;
+    state.resetDebt();
+    state.consecutiveLossesStreak = 0;
+
+    _stopReason =
+        '🌟 STOP PROFIT reached at +${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Target: +${targetPercent.toStringAsFixed(4)}%). Taking a 2-3 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Profit reset to 0.000%.';
+    debugPrint('[STOP PROFIT] 🛑 $_stopReason');
+
+    // 4. Start countdown updates for UI
+    _startBreakCountdownTimer();
+    notifyListeners();
+  }
+
   Future<bool> _checkStopProfitInline(int runToken, {GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
-    if (!_isStopProfitEnabled) {
+    final isTpEnabled = isStopProfitEnabledFor(targetMode);
+    if (!isTpEnabled) {
       return false;
     }
+    final targetPercent = getStopProfitPercent(targetMode);
 
     double pnl = 0.0;
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
@@ -1289,32 +1424,20 @@ class OverlayButtonsViewModel with ChangeNotifier {
       pnl = ((curBalance - state.sessionStartBalance!) / state.sessionStartBalance!) * 100;
     }
 
-    if (pnl >= _stopProfitPercent) {
-      _stopReason =
-          '🌟 STOP PROFIT reached at ${pnl.toStringAsFixed(4)}% on ${targetMode.displayName} (Target: +${_stopProfitPercent.toStringAsFixed(4)}%)';
-      debugPrint('[INLINE TP] 🛑 [${targetMode.displayName}] $_stopReason');
-
-      if (_is24HourMode) {
-        // 🌟 24/7 PROFIT BANKING: เก็บกำไรเข้าพอร์ต ไม่ดับระบบ พัก 3 นาทีแล้วปั่นกำไรต่อ!
-        double curBalance = await _getBalanceDouble(mode: targetMode);
-        if (curBalance <= 0.00000001) curBalance = state.lastSettledBalance;
-        state.profitMilestonesAchieved++;
-        state.sessionProfitBaseline = curBalance;
-        state.sessionStartBalance = curBalance;
-        state.sessionMaxBalance = curBalance;
-        state.protectedPrincipal = curBalance * 0.97;
-        debugPrint(
-          '🏦 [24/7 PROFIT BANKING 🌟] [${targetMode.displayName}] กำไรแตะเป้า +${pnl.toStringAsFixed(2)}%! ล็อกกำไรสะสมก้อนที่ ${state.profitMilestonesAchieved}! พัก 3 นาที แล้วเริ่มรอบสะสมกำไรก้อนถัดไปในระบบ 24 ชม.',
-        );
-        await Future.delayed(Duration(seconds: (180 / _speedMultiplier).round()));
-        return false; // ไม่ตัดลูป! ทำงานต่อเนื่อง 24 ชั่วโมง
-      } else {
-        stopSequence(mode: targetMode);
-        return true;
-      }
+    if (pnl >= targetPercent) {
+      await _handleStopProfitReached(
+        mode: targetMode,
+        pnl: pnl,
+        targetPercent: targetPercent,
+      );
+      return true;
     }
     return false;
   }
+
+  @visibleForTesting
+  Future<bool> testCheckStopProfitInline(int runToken, {GameMode? mode}) =>
+      _checkStopProfitInline(runToken, mode: mode);
 
   /// 🛡️ SHIELD 2: HARD STOP-LOSS ENGINE (30% Max Drawdown Protection)
   /// ป้องกันการล้างพอร์ต 100%: หากยอดเงินร่วงลงเกิน 30% จากจุดสูงสุด (ATH) หรือเงินเริ่มต้น
@@ -1349,41 +1472,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
       return true;
     }
 
-    // 🎯 AQ-DARE PILLAR 5: DYNAMIC CAPITAL STOP-LOSS (20% Max Drawdown Floor)
-    // ล็อกเพดาน Drawdown ไม่เกิน 20% จากยอดสูงสุด (ATH) เพื่อการันตีรักษา 80% ของพอร์ตไว้เสมอ
-    final double hardStopLossFloor = baselineCapital * 0.80;
-    if (curBalance <= hardStopLossFloor) {
-      final double drawdownPct = ((baselineCapital - curBalance) / baselineCapital) * 100.0;
-      _stopReason =
-          '🚨 HARD STOP-LOSS TRIGGERED: Drawdown -${drawdownPct.toStringAsFixed(2)}% on ${targetMode.displayName} '
-          '(Current: ${curBalance.toStringAsFixed(8)} <= Floor: ${hardStopLossFloor.toStringAsFixed(8)} from Peak: ${baselineCapital.toStringAsFixed(8)}).';
-      debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
-
-      if (_is24HourMode) {
-        // 🌟 24/7 AUTONOMOUS RESILIENCE: ไม่ตัดการทำงานจนแอปดับ!
-        // เข้าสู่ Safe Haven Protocol: พัก 15 นาที, ล้างหนี้เป็น 0, รีเซ็ต Baseline, แล้วเดิน Base Bet ต่ออัตโนมัติ 24 ชม.
-        debugPrint(
-          '🛌 [24/7 SAFE HAVEN ACTIVATED 🛡️] [${targetMode.displayName}] Drawdown -${drawdownPct.toStringAsFixed(2)}%! '
-          'เข้าสู่ Safe Haven: พักเครื่อง 15 นาทีเพื่อล้างพิษ RNG คาสิโน -> ล้างหนี้สะสมทั้งหมดเป็น 0 -> รีเซ็ตทุนตั้งต้นสู่ยอดปัจจุบัน (${curBalance.toStringAsFixed(8)}) '
-          '-> ล็อกเดิน Base Bet 30 ตา ต่อนอนสต็อป 24 ชม.!',
-        );
-        state.resetDebt();
-        state.sessionMaxBalance = curBalance;
-        state.sessionStartBalance = curBalance;
-        state.protectedPrincipal = curBalance;
-        state.observationRoundsRemaining = 30; // ล็อก Base Bet 30 ตาเพื่อฟื้นฟู
-        state.isLossStreakBaseBetLocked = true;
-        state.recoveryState = RecoveryState.observation;
-        await _ensureBaseBet(runToken, mode: targetMode);
-        await Future.delayed(Duration(seconds: (900 / _speedMultiplier).round())); // พัก 15 นาที
-        return false; // ไม่ตัดลูป! บอททำงานต่อเนื่อง 24 ชั่วโมง
-      } else {
-        state.isLossStreakBaseBetLocked = true;
-        state.recoveryCircuitBreakerActive = true;
-        stopSequence(mode: targetMode);
-        return true;
-      }
-    }
+    // 🎯 คำสั่งผู้ใช้: "ปลดล็อกความปลอดภัยของเงินทุน"
+    // ปลดล็อกเพดาน 20% Stop-Loss Floor ไม่ตัดการทำงานฉุกเฉินเมื่อ Drawdown เกิน เพื่อให้รันได้อย่างอิสระต่อเนื่อง
+    // ให้ระบบควบคุมความเสี่ยงด้วยกลไก "แพ้ 3 ตาติด ถอย Base Bet 8-12 ตา" แทน (รักษาเงินทุนจากการล้างพอร์ต)
 
     return false;
   }
@@ -1531,11 +1622,25 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<void> _executeSmartFlow(int runToken, {GameMode mode = GameMode.towers}) async {
     final state = getState(mode);
     while (!_shouldAbort(runToken, mode: mode) && _isSmartMode) {
+      // 🌟 CHECK 2-3 HOUR BREAK
+      if (isBreakActiveFor(mode)) {
+        debugPrint(
+          '[SMART FLOW] ⏳ [${mode.displayName}] Entering Stop Profit Break (Remaining: ${getBreakRemainingFormatted(mode)})...',
+        );
+        while (isBreakActiveFor(mode) && !_shouldAbort(runToken, mode: mode)) {
+          await Future.delayed(const Duration(seconds: 1));
+        }
+        if (_shouldAbort(runToken, mode: mode)) break;
+        debugPrint(
+          '[SMART FLOW] 🚀 [${mode.displayName}] 2-3 Hour Break completed! Resuming automated betting with 0.000% baseline.',
+        );
+      }
+
       if (await _checkStopProfitInline(runToken, mode: mode)) {
         debugPrint(
-          '[SMART FLOW] 🛑 [${mode.displayName}] Stop Profit reached — NOT starting new round',
+          '[SMART FLOW] 🛑 [${mode.displayName}] Stop Profit triggered — entering 2-3 hour break',
         );
-        break;
+        continue;
       }
       if (await _checkStopLossInline(runToken, mode: mode)) {
         debugPrint(
@@ -1741,7 +1846,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         while (guardWaitMs < maxGuardWaitMs && !_shouldAbort(runToken, mode: mode)) {
           final dynamic checkResult = await m0WebCtrl.evaluateJavascript(source: """
             (function() {
-              if (window._betTypingInProgress === true) return { ready: false, reason: 'typing' };
+              if (window[Symbol.for('gp_typing_busy')] === true) return { ready: false, reason: 'typing' };
               let inp = null;
               let isMinesMode = window.location.href.includes('polpick') || window.location.href.includes('gems.php') || window.location.href.includes('mines');
               if (isMinesMode) {
@@ -2208,6 +2313,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
               _randomizeRhythm();
               debugPrint('🎉 [ATH VICTORY] 🌟 [${mode.displayName}] ชนะ Base Bet แตะ New High! กลับสู่โหมด Base Bet ปกติ');
               await rotateWebClientSeed(mode: mode);
+              // 🛡️ NO CYCLE CUT-LOSS (ผู้ใช้สั่งห้ามมีเพดานและห้ามตัดทิ้ง):
+              // ปล่อยให้หนี้สะสมยกยอดไปรอบต่อไปตามปกติ เพื่อให้ทวงคืนได้ครบทุกบาททุกสตางค์
               await _ensureBaseBet(runToken, mode: mode);
             }
 
@@ -2248,8 +2355,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
           notifyListeners();
 
           if (await _checkStopProfitInline(runToken, mode: mode)) {
-            debugPrint('[SMART FLOW] 🛑 Stop Profit reached after WIN — stopping');
-            break;
+            debugPrint('[SMART FLOW] 🛑 Stop Profit reached after WIN — entering 2-3 hour break');
+            continue;
           }
         } else if (discoveredBombPos != null || (m0Status == 'bet' && m0Retries >= 4)) {
           // Confirmed LOSS
@@ -2364,20 +2471,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
             );
           }
 
-          // 🛡️ SHIELD 4: Record loss in recent rounds history & Bad Run Circuit Breaker
+          // 🛡️ SHIELD 4: ROLLING ROUND HISTORY FOR BAD RUN / CASINO COUNTER
           state.recentRoundsHistory.add(false);
           if (state.recentRoundsHistory.length > 10) {
             state.recentRoundsHistory.removeAt(0);
           }
-          final int recentLossCount = state.recentRoundsHistory.where((w) => !w).length;
-          if (state.recentRoundsHistory.length >= 8 && recentLossCount >= 6) {
-            debugPrint(
-              '🚨 [CASINO COUNTER DETECTED 🛡️] [${mode.displayName}] พบการแพ้ผิดปกติ $recentLossCount จาก 10 ตาล่าสุด! เข้าสู่มาตรการพักระบบชั่วคราว 5 นาที เพื่อทำลายกับดัก RNG คาสิโน...',
-            );
-            state.recentRoundsHistory.clear();
-            state.isCurrentlyRecoveryRound = false;
-            await _ensureBaseBet(runToken, mode: mode);
-            await Future.delayed(Duration(seconds: (300 / _speedMultiplier).round()));
+          final int recentLosses = state.recentRoundsHistory.where((w) => !w).length;
+          if (recentLosses >= 6 && state.recentRoundsHistory.length >= 8) {
+            debugPrint('🛑 [SHIELD 4 / BAD RUN] Casino Counter-Measure Detected! >= 6 losses in 10 rounds!');
+            await Future.delayed(const Duration(seconds: 300));
           }
 
           // 🛡️ Post-Loss Handling:
@@ -2511,6 +2613,18 @@ class OverlayButtonsViewModel with ChangeNotifier {
       int roundInterval = 2500 + Random().nextInt(1700);
       debugPrint('[PACE] 🕒 [${mode.displayName}] Interval before next round: ${roundInterval}ms (2.5s - 4.2s)');
       await Future.delayed(Duration(milliseconds: (roundInterval / _speedMultiplier).round()));
+
+      // 👤 Human Micro-rest (พักสายตา / เช็คยอดเงิน 12–25 วินาที ทุก 20–35 ตา ป้องกัน Behavioral Timing Pattern Detection)
+      state.roundsSinceMicroRest++;
+      if (state.roundsSinceMicroRest >= state.nextMicroRestTarget) {
+        state.roundsSinceMicroRest = 0;
+        state.nextMicroRestTarget = 20 + Random().nextInt(16);
+        final int microRestSec = 12 + Random().nextInt(14);
+        debugPrint('[HUMAN BIOMETRICS 👤] [${mode.displayName}] Casual player pause / eye-rest: ${microRestSec}s (Next rest after ${state.nextMicroRestTarget} rounds)');
+        for (int s = 0; s < microRestSec && !_shouldAbort(runToken, mode: mode); s++) {
+          await Future.delayed(Duration(milliseconds: (1000 / _speedMultiplier).round()));
+        }
+      }
     }
     state.isRunning = false;
     _isRunning = isAnyRunning;
@@ -2522,6 +2636,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    _breakCountdownTimer?.cancel();
+    _breakCountdownTimer = null;
     for (var s in _statesByMode.values) {
       s.runToken++;
       s.isRunning = false;
@@ -2582,23 +2698,31 @@ class OverlayButtonsViewModel with ChangeNotifier {
           final String clickScript = """
             (function(x, y, r, markerId) {
               function doClick(el, px = x, py = y) {
-                if (!el) return false;
+                // 👤 Human touch micro-jitter (+/- 2px) to prevent robotic pixel-perfect detection
+                const jx = px + (Math.random() - 0.5) * 4;
+                const jy = py + (Math.random() - 0.5) * 4;
                 const base = {
                   bubbles: true,
                   cancelable: true,
                   composed: true,
                   view: window,
-                  clientX: px,
-                  clientY: py,
-                  screenX: window.screenX + px,
-                  screenY: window.screenY + py,
-                  pageX: px + window.scrollX,
-                  pageY: py + window.scrollY,
+                  clientX: jx,
+                  clientY: jy,
+                  screenX: window.screenX + jx,
+                  screenY: window.screenY + jy,
+                  pageX: jx + window.scrollX,
+                  pageY: jy + window.scrollY,
                   button: 0
                 };
                 
-                const pointerDown = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 1};
-                const pointerUp = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 0};
+                // 👤 Realistic human pointer approach trajectory
+                const appX = jx + (Math.random() * 4 - 2);
+                const appY = jy + (Math.random() * 4 - 2);
+                try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: appX, clientY: appY, pointerId: 1, pointerType: 'touch', buttons: 0 })); } catch(e){}
+                try { el.dispatchEvent(new MouseEvent('mousemove', { ...base, clientX: appX, clientY: appY, buttons: 0 })); } catch(e){}
+
+                const pointerDown = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 1, pressure: 0.5 + Math.random() * 0.3};
+                const pointerUp = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 0, pressure: 0.0};
                 const mDown = new MouseEvent('mousedown', { ...base, buttons: 1 });
                 const mUp = new MouseEvent('mouseup', { ...base, buttons: 0 });
                 const mClick = new MouseEvent('click', { ...base, buttons: 0 });
@@ -2609,20 +2733,29 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 try { el.dispatchEvent(new PointerEvent('pointerdown', pointerDown)); } catch(e){}
                 try { el.dispatchEvent(mDown); } catch(e){}
                 
-                try { el.dispatchEvent(new PointerEvent('pointerup', pointerUp)); } catch(e){}
-                try { el.dispatchEvent(mUp); } catch(e){}
-                
-                try { 
-                  if (typeof el.click === 'function') {
-                    el.click(); 
-                  } else {
+                // 👤 Human touch dwell time (50ms - 95ms) before releasing
+                setTimeout(() => {
+                  // Human micro-jitter during touch contact
+                  const contX = jx + (Math.random() * 1.5 - 0.75);
+                  const contY = jy + (Math.random() * 1.5 - 0.75);
+                  try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: contX, clientY: contY, pointerId: 1, pointerType: 'touch', buttons: 1, pressure: 0.4 })); } catch(e){}
+
+                  try { el.dispatchEvent(new PointerEvent('pointerup', pointerUp)); } catch(e){}
+                  try { el.dispatchEvent(mUp); } catch(e){}
+                  
+                  try { 
+                    if (typeof el.click === 'function') {
+                      el.click(); 
+                    } else {
+                      el.dispatchEvent(mClick);
+                    }
+                  } catch(e){
                     el.dispatchEvent(mClick);
                   }
-                } catch(e){
-                  el.dispatchEvent(mClick);
-                }
-                
-                if (el.focus) el.focus();
+                  
+                  // 🛡️ Prevent soft keyboard from appearing
+                  if (el && typeof el.blur === 'function') el.blur();
+                }, 50 + Math.random() * 45);
                 return true;
               }
 
@@ -2863,16 +2996,18 @@ class OverlayButtonsViewModel with ChangeNotifier {
       SystemChannels.textInput.invokeMethod('TextInput.hide');
       FocusManager.instance.primaryFocus?.unfocus();
 
-      // Set typing flags in WebView
+      // Set typing flags in WebView using un-enumerable Symbol
       await controller.evaluateJavascript(
-        source: "window._betTypingInProgress = true; window._betTypingCompleted = false;",
+        source: "window[Symbol.for('gp_typing_busy')] = true; window[Symbol.for('gp_typing_done')] = false;",
       ).timeout(const Duration(milliseconds: 300), onTimeout: () => null);
 
       await controller.evaluateJavascript(
         source: """
           (function(val) {
-            window._betTypingInProgress = true;
-            window._betTypingCompleted = false;
+            var sBusy = Symbol.for('gp_typing_busy');
+            var sDone = Symbol.for('gp_typing_done');
+            window[sBusy] = true;
+            window[sDone] = false;
 
             return new Promise((resolve) => {
               function findInput() {
@@ -2936,17 +3071,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
               var input = findInput();
               if (!input) {
-                window._betTypingInProgress = false;
-                window._betTypingCompleted = true;
+                window[sBusy] = false;
+                window[sDone] = true;
                 resolve(false);
                 return;
               }
 
-              // 🛡️ Prevent Virtual Keyboard from popping up on Android/Mobile
+              // 🛡️ คำสั่งผู้ใช้: "ห้ามไม่ให้ Keyboard ขื้นมาครับ" (Suppress Soft Keyboard without readOnly anomaly)
               const oldInputMode = input.getAttribute('inputmode');
-              const oldReadOnly = input.readOnly;
               input.setAttribute('inputmode', 'none');
-              input.readOnly = true;
 
               const nativeProp = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
               const setter = nativeProp ? nativeProp.set : null;
@@ -2957,7 +3090,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 } else {
                   input.value = v;
                 }
-                input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                try {
+                  input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                } catch(e){}
               }
               
               // Clear input
@@ -2972,18 +3107,32 @@ class OverlayButtonsViewModel with ChangeNotifier {
                   currentText += char;
                   setVal(currentText);
                   
-                  input.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
-                  input.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
-                  input.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+                  const isDigit = !isNaN(parseInt(char));
+                  const code = isDigit ? ('Digit' + char) : (char === '.' ? 'Period' : ('Key' + char.toUpperCase()));
+                  
+                  try {
+                    input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: code, bubbles: true, cancelable: true }));
+                  } catch(e){}
+                  try {
+                    input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true, cancelable: true }));
+                  } catch(e){}
+                  try {
+                    input.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
+                  } catch(e){}
+                  try {
+                    input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: code, bubbles: true, cancelable: true }));
+                  } catch(e){}
                   i++;
                   
-                  const charDelay = 80 + Math.random() * 50;
+                  // 🎯 คำสั่งผู้ใช้: "ปรับความไวการพิมพ์ทีละตัวให้ช้าลง" (Human-like pacing: 220ms - 400ms per char, 350ms - 550ms for dot)
+                  const isDot = (char === '.');
+                  const charDelay = isDot ? (350 + Math.random() * 200) : (220 + Math.random() * 180);
                   setTimeout(typeNext, charDelay);
                 } else {
                   setVal(val);
-                  input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-                  input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
-                  input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                  try { input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true })); } catch(e){}
+                  try { input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' })); } catch(e){}
+                  try { input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' })); } catch(e){}
                   
                   // Restore original attributes and blur
                   if (oldInputMode) {
@@ -2991,36 +3140,38 @@ class OverlayButtonsViewModel with ChangeNotifier {
                   } else {
                     input.removeAttribute('inputmode');
                   }
-                  input.readOnly = oldReadOnly;
-                  input.blur();
-                  window._betTypingInProgress = false;
-                  window._betTypingCompleted = true;
-                  setTimeout(() => resolve(true), 60);
+                  if (input.blur) input.blur();
+
+                  setTimeout(() => {
+                    window[sBusy] = false;
+                    window[sDone] = true;
+                    resolve(true);
+                  }, 200 + Math.random() * 150);
                 }
               }
               
-              setTimeout(typeNext, 60);
+              setTimeout(typeNext, 180 + Math.random() * 120);
             });
           })('$amountStr')
         """,
-      ).timeout(const Duration(seconds: 12), onTimeout: () => null);
+      ).timeout(const Duration(seconds: 30), onTimeout: () => null);
 
-      debugPrint('[BET SET] ⌨️ [${targetMode.displayName}] Typing $amountStr started...');
-      // Wait for JavaScript typing to complete (polling window._betTypingCompleted)
+      debugPrint('[BET SET] ⌨️ [${targetMode.displayName}] Typing $amountStr started (Human-like pacing)...');
+      // Wait for JavaScript typing to complete (polling Symbol flag)
       final stopwatch = Stopwatch()..start();
-      const int maxTypingWaitMs = 10000;
+      const int maxTypingWaitMs = 30000;
       bool isCompleted = false;
 
       while (stopwatch.elapsedMilliseconds < maxTypingWaitMs) {
         final dynamic res = await controller.evaluateJavascript(
-          source: "window._betTypingCompleted === true && window._betTypingInProgress !== true",
+          source: "window[Symbol.for('gp_typing_done')] === true && window[Symbol.for('gp_typing_busy')] !== true",
         ).timeout(const Duration(milliseconds: 300), onTimeout: () => null);
 
         if (res == true || res.toString() == 'true') {
           isCompleted = true;
           break;
         }
-        await Future.delayed(const Duration(milliseconds: 50));
+        await Future.delayed(const Duration(milliseconds: 100));
       }
 
       debugPrint('[BET SET] ✅ [${targetMode.displayName}] Typing $amountStr 100% complete in ${stopwatch.elapsedMilliseconds}ms (isCompleted: $isCompleted)!');
@@ -3028,8 +3179,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       // Hide keyboard again just in case
       SystemChannels.textInput.invokeMethod('TextInput.hide');
 
-      // 🕒 พักมือ 85-100 ms หลังพิมพ์เสร็จและปิดโฟกัส ก่อนขยับไปกด M0 (User Directive)
-      final int handRestMs = 85 + Random().nextInt(16);
+      // 🕒 พักมือ 150-250 ms หลังพิมพ์เสร็จและปิดโฟกัส ก่อนขยับไปกด M0 (Human-like pause)
+      final int handRestMs = 150 + Random().nextInt(100);
       debugPrint('[BET SET] 🖐️ [${targetMode.displayName}] Hand rest pause: ${handRestMs}ms before M0');
       await Future.delayed(Duration(milliseconds: handRestMs));
     } catch (e) {
@@ -3455,8 +3606,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
             inp.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
             inp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
           }
-          window._betTypingInProgress = false;
-          window._betTypingCompleted = true;
+          window[Symbol.for('gp_typing_busy')] = false;
+          window[Symbol.for('gp_typing_done')] = true;
         })('$targetStr');
       """).timeout(const Duration(milliseconds: 500), onTimeout: () => null);
     } catch (e) {
@@ -3492,8 +3643,6 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<void> _executeSymbioticRecovery(
     int runToken, {
     GameMode? mode,
-    double targetFraction = 1.0,
-    double? fluidFraction,
   }) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
@@ -3526,17 +3675,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
     // รอบที่ 1: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 2: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet
     // รอบที่ 3: แพ้ครบ 3 ตา รอ 15-25 ตา ทวงทันที แพ้ทวง แพ้ทวง แพ้ กลับไป Base bet วนกลับไป รอบแรก
-    // 🎯 AQ-DARE PILLAR 2: DYNAMIC DEBT SLICING (25% per slice = 4 slices)
-    // แบ่งทวงทีละ 25% ของหนี้สะสม เพื่อลดภาระ Recovery Bet ลงถึง ~75%
-    // ป้องกันการ All-in หรือเบทก้อนโตที่สุ่มเสี่ยงต่อ Drawdown ลึก
-    double sliceDebt = totalDebt * 0.25;
-    if (sliceDebt < floorBet) {
-      sliceDebt = totalDebt; // หาก 25% ต่ำกว่า Floor Bet ให้ทวงตามหนี้จริง
-    }
-    final double debtToEscalate = sliceDebt;
+    // 🎯 คำสั่งผู้ใช้: "เปิดการทวงหนี้เต็มจำนวน ไม่ใช้ เพดาน ปลดล็อกความปลอดภัยของเงินทุน"
+    // ทวงหนี้ 100% เต็มจำนวนในไม้เดียว ชนะไม้เดียวหนี้หมดเกลี้ยงทันที
+    final double debtToEscalate = totalDebt;
 
     debugPrint(
-      '🎯 [AQ-DARE DEBT SLICING ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้รอบนี้: ${debtToEscalate.toStringAsFixed(8)} (แบ่งทวง 25% Slice จากหนี้รวม: ${totalDebt.toStringAsFixed(8)})',
+      '🎯 [FULL DEBT RECOVERY ⚡] [${targetMode.displayName}] [รอบที่ ${state.currentRecoveryCycle} | ไม้ที่ ${state.recoveryStepInCycle}/3] | ทวงหนี้เต็มจำนวน 100%: ${debtToEscalate.toStringAsFixed(8)} (หนี้รวม: ${totalDebt.toStringAsFixed(8)})',
     );
 
     // 🎯 คำสั่งผู้ใช้ (/grill-me Lean & Safe Recovery Bet Sizing):
@@ -3545,11 +3689,31 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final double baseSurplus = floorBet * pRate * 2.0;
     final double surplusProfitMargin = baseSurplus;
     debugPrint(
-      '🛡️ [LEAN RECOVERY SIZING 💎] [${targetMode.displayName}] Debt Slice: ${debtToEscalate.toStringAsFixed(8)} + Surplus(2x Base): ${baseSurplus.toStringAsFixed(8)} -> Target Profit: ${(debtToEscalate + surplusProfitMargin).toStringAsFixed(8)}',
+      '🛡️ [LEAN RECOVERY SIZING 💎] [${targetMode.displayName}] Debt: ${debtToEscalate.toStringAsFixed(8)} + Surplus(2x Base): ${baseSurplus.toStringAsFixed(8)} -> Target Profit: ${(debtToEscalate + surplusProfitMargin).toStringAsFixed(8)}',
     );
 
-    double targetProfit = debtToEscalate + surplusProfitMargin;
+        // 🛡️ UNCAPPED FRACTIONAL RECOVERY (ระบบทวงหนี้แบบซอยเศษส่วน ยืดหยุ่น ไร้เพดานตายตัว)
+    // - ไม่มีการบังคับล้างหนี้ทิ้ง (No Cut-Loss)
+    // - ยิ่งหนี้ก้อนใหญ่ ยิ่งซอยแบ่งทวงหลายไม้ เพื่อไม่ให้เบททบจนล้นกระเป๋า
+    double divisor = 1.0;
+    
+    // คำนวณความเสี่ยงจากยอดหนี้เทียบกับพอร์ตจริง
+    if (debtToEscalate > currentBalance * 0.02) divisor = 4.0;
+    if (debtToEscalate > currentBalance * 0.05) divisor = 10.0;
+    if (debtToEscalate > currentBalance * 0.15) divisor = 20.0;
+    if (debtToEscalate > currentBalance * 0.30) divisor = 50.0;
+    if (debtToEscalate > currentBalance * 0.50) divisor = 100.0;
+
+    double targetProfit = (debtToEscalate / divisor) + surplusProfitMargin;
     double requiredBet = targetProfit / pRate;
+
+    // ต้องไม่เกินยอดเงินคงเหลือจริงในบัญชี (ป้องกัน Error ยอดเงินไม่พอ)
+    if (requiredBet > currentBalance && currentBalance > 0) {
+      requiredBet = currentBalance;
+      debugPrint(
+        '⚠️ [UNCAPPED ALL-IN] [${targetMode.displayName}] หนี้เกินทุน! All-in ที่ ${requiredBet.toStringAsFixed(8)}',
+      );
+    }
 
     if (requiredBet < minRecoveryBet) {
       requiredBet = minRecoveryBet;
@@ -3565,33 +3729,18 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = casinoHardLimit;
     }
 
-    // 🛡️ AQ-DARE PILLAR 4: HALF-KELLY BET SIZING (Max 5% of Bankroll Cap, Absolute Cap 7%)
-    // ห้าม All-in เด็ดขาด 100%! ไม่ว่าจะมีหนี้สะสมเท่าไหร่ก็ตาม เบททวงต้องไม่เกิน 5% ของยอดเงินในกระเป๋า
-    // หากหนี้สูงเกินไป ให้ผ่อนทวงหลายตา แทนที่จะทุ่มหมดตัวในตาเดียว
-    if (currentBalance > 0.00000001) {
-      final double maxBankrollCap = currentBalance * 0.05;
-      if (requiredBet > maxBankrollCap) {
-        debugPrint(
-          '🛡️ [AQ-DARE PILLAR 4: 5% HARD BET CAP] Required bet (${requiredBet.toStringAsFixed(8)}) exceeds 5% bankroll cap (${maxBankrollCap.toStringAsFixed(8)}). Capped to 5% of balance!',
-        );
-        requiredBet = maxBankrollCap;
-      }
-    }
-
     // Floor protection: ต้องไม่ต่ำกว่า Base Bet ขั้นต่ำ
     if (requiredBet < floorBet) {
       requiredBet = floorBet;
     }
 
-    // Absolute sanity ceiling: ห้ามเดิมพันเกิน 7% ของ balance เด็ดขาด
-    if (currentBalance > floorBet && requiredBet > currentBalance * 0.07) {
-      requiredBet = currentBalance * 0.07;
-    }
-
     requiredBet = double.parse(requiredBet.toStringAsFixed(8));
     state.currentBetAmount = requiredBet;
     debugPrint(
-      '🎯 [AQ-DARE RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | หนี้รอบนี้ (25%): ${debtToEscalate.toStringAsFixed(8)} | เบททวง: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
+      '🎯 [FULL 100% RECOVERY ⚡] [${targetMode.displayName}] ทวงเต็มหนี้ 100%: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวงเต็ม 100%: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
+    );
+    debugPrint(
+      '🎯 [SAFE DEBT RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวงปลอดภัย: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
     );
 
     // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ เพื่อให้แน่ใจว่าเว็บรับยอดทวงหนี้ 100% เต็ม

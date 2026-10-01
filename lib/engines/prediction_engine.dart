@@ -1,7 +1,4 @@
-import 'dart:convert';
 import 'dart:math';
-import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 
 class PredictionResult {
   final String chosenTarget;
@@ -33,6 +30,10 @@ class AutonomousPredictionEngine {
   late String _clientSeed;
   int _nonce = 0;
   final Random _rng = Random();
+
+  String get serverSeed => _serverSeed;
+  String get clientSeed => _clientSeed;
+  int get nonce => _nonce;
 
   void rotateSeed() {
     const chars = '0123456789abcdef';

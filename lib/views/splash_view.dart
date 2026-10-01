@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:golden_p/views/login_view.dart';
 import 'package:golden_p/views/super_app_tabs_view.dart';
 import 'package:golden_p/services/auth_service.dart';
 
@@ -72,47 +71,6 @@ class _SplashViewState extends State<SplashView> with TickerProviderStateMixin {
     }
   }
 
-  // Example Force Update Modal (For UX demonstration if needed)
-  void _showForceUpdateModal() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E24),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: Colors.redAccent, width: 2),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
-              SizedBox(width: 8),
-              Text(
-                "CRITICAL UPDATE",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          content: const Text(
-            "Your engine version is out of date.\nPlease update to ensure maximum security.",
-            style: TextStyle(color: Colors.grey),
-          ),
-          actions: [
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-              ),
-              onPressed: () {
-                // Mock update action
-              },
-              child: const Text("UPDATE NOW", style: TextStyle(color: Colors.white)),
-            )
-          ],
-        );
-      }
-    );
-  }
 
   @override
   void dispose() {

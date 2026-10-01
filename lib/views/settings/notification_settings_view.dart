@@ -106,7 +106,7 @@ class NotificationSettingsView extends ConsumerWidget {
           Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: Colors.white,
+            activeThumbColor: Colors.white,
             activeTrackColor: const Color(0xFF3B82F6),
           ),
         ],

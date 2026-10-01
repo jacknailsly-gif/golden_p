@@ -122,7 +122,7 @@ class SecuritySettingsView extends ConsumerWidget {
                     onChanged: (val) {
                       notifier.toggleTwoFactor(val);
                     },
-                    activeColor: Colors.white,
+                    activeThumbColor: Colors.white,
                     activeTrackColor: const Color(0xFF3B82F6),
                   ),
                 ],

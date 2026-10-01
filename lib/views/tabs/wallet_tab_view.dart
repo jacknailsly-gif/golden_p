@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:golden_p/services/user_agent_service.dart';
 
 class WalletTabView extends StatefulWidget {
   const WalletTabView({super.key});
@@ -9,7 +10,8 @@ class WalletTabView extends StatefulWidget {
 }
 
 class _WalletTabViewState extends State<WalletTabView> {
-  late final InAppWebViewController _webViewController;
+  InAppWebViewController? _webViewController;
+  InAppWebViewController? get webViewController => _webViewController;
   bool _isLoading = true;
 
   @override
@@ -34,6 +36,12 @@ class _WalletTabViewState extends State<WalletTabView> {
           InAppWebView(
             initialUrlRequest: URLRequest(
               url: WebUri('https://faucetpay.io'),
+            ),
+            initialUserScripts: UserAgentService.initialUserScripts,
+            initialSettings: InAppWebViewSettings(
+              userAgent: UserAgentService.currentUserAgent,
+              applicationNameForUserAgent: '',
+              requestedWithHeaderOriginAllowList: <String>{},
             ),
             onWebViewCreated: (controller) {
               _webViewController = controller;

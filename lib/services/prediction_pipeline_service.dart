@@ -1,13 +1,9 @@
 import 'dart:math';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:golden_p/models/prediction_context.dart';
 import 'package:golden_p/models/prediction_result.dart';
-import 'package:golden_p/engines/algolithone_engine.dart';
-
 class PredictionPipelineService {
   final List<String> buttonValues = ['A', 'B', 'C'];
-  final AlgolithoneEngine _algolithoneEngine = AlgolithoneEngine();
 
   // --- V52.0: 6-Engine Super Ensemble State with Memory Decay ---
   final Map<String, double> _engineScores = {
@@ -63,9 +59,6 @@ class PredictionPipelineService {
     List<String> decisionSequence,
   ) {
     // 1. Hard Cooldown via Algolithone Safety Mode (Optional/Disabled)
-    List<String> historyStrings = context.inputs.map((e) => e.value).toList();
-    AlgolithoneResult algoResult = _algolithoneEngine.analyze(historyStrings);
-
     Map<String, double> consensusScores = {'A': 0.0, 'B': 0.0, 'C': 0.0};
     
     // Engine 1: Base Machine Learning + Crypto RNG
@@ -128,15 +121,7 @@ class PredictionPipelineService {
         recentCounts[recentBombs[i]] = (recentCounts[recentBombs[i]] ?? 0) + 1;
       }
       
-      List<String> keysMost = List.from(buttonValues)..shuffle();
-      String mostFrequent = keysMost.first;
-      int maxCount = -1;
-      for (String key in keysMost) {
-        int count = recentCounts[key] ?? 0;
-        if (count > maxCount) { maxCount = count; mostFrequent = key; }
-      }
-      
-      // We want to avoid `mostFrequent`, so pick one of the others randomly or pick the least frequent
+      // Pick the least frequent bomb column
       List<String> keysLeast = List.from(buttonValues)..shuffle();
       String leastFrequent = keysLeast.first;
       int minCount = 999;

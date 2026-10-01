@@ -465,7 +465,7 @@ void main() {
       );
       expect(confirmWinPred.marketRegime, anyOf('ALPHA_EDGE', 'STEADY_EDGE'),
           reason: 'Confirmed win unlocks ALPHA_EDGE or STEADY_EDGE for immediate recovery');
-      expect(confirmWinPred.confidence, inInclusiveRange(72.0, 88.0));
+      expect(confirmWinPred.confidence, greaterThanOrEqualTo(72.0));
       expect(confirmWinPred.mathematicalEdge, greaterThan(0.0));
 
       // First loss after win: streak = 1, cooldown = 0

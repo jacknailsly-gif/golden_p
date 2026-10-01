@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:golden_p/models/game_mode.dart';
 import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/viewmodels/sequence_analyzer_viewmodel.dart';
 
@@ -15,6 +16,7 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
   late TextEditingController _maxM5StepsController;
   late TextEditingController _serverUrlController;
   bool _controllerInitialized = false;
+  GameMode? _lastMode;
 
   @override
   void dispose() {
@@ -28,10 +30,11 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
   Widget build(BuildContext context) {
     return Consumer<OverlayButtonsViewModel>(
       builder: (context, viewModel, _) {
-        // Initialize controller with current value once
+        final currentMode = viewModel.activeGameMode;
+        // Initialize controller with current value once or on mode switch
         if (!_controllerInitialized) {
           _stopProfitController = TextEditingController(
-            text: viewModel.stopProfitPercent.toStringAsFixed(1),
+            text: viewModel.getStopProfitPercent(currentMode).toStringAsFixed(1),
           );
           _maxM5StepsController = TextEditingController(
             text: viewModel.maxM5Steps.toString(),
@@ -41,6 +44,11 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
             text: analyzerViewModel.serverUrl,
           );
           _controllerInitialized = true;
+          _lastMode = currentMode;
+        } else if (_lastMode != currentMode) {
+          _lastMode = currentMode;
+          _stopProfitController.text =
+              viewModel.getStopProfitPercent(currentMode).toStringAsFixed(1);
         }
         if (viewModel.isSequencePanelCollapsed) {
           return Positioned(
@@ -254,8 +262,8 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
                               width: 32,
                               height: 24,
                               child: Switch(
-                                value: viewModel.isStopProfitEnabled,
-                                onChanged: (val) => viewModel.setStopProfitEnabled(val),
+                                value: viewModel.isStopProfitEnabledFor(currentMode),
+                                onChanged: (val) => viewModel.setStopProfitEnabled(val, mode: currentMode),
                                 activeThumbColor: Colors.greenAccent,
                                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                               ),
@@ -282,19 +290,19 @@ class _MarkerControlPanelState extends State<MarkerControlPanel> {
                                   ),
                                   enabledBorder: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(6),
-                                    borderSide: BorderSide(color: viewModel.isStopProfitEnabled ? Colors.greenAccent.withValues(alpha: 0.5) : Colors.transparent),
+                                    borderSide: BorderSide(color: viewModel.isStopProfitEnabledFor(currentMode) ? Colors.greenAccent.withValues(alpha: 0.5) : Colors.transparent),
                                   ),
                                 ),
                                 onChanged: (val) {
                                   final parsed = double.tryParse(val);
                                   if (parsed != null && parsed > 0) {
-                                    viewModel.setStopProfitPercent(parsed);
+                                    viewModel.setStopProfitPercent(parsed, mode: currentMode);
                                   }
                                 },
                                 onFieldSubmitted: (val) {
                                   final parsed = double.tryParse(val);
                                   if (parsed != null && parsed > 0) {
-                                    viewModel.setStopProfitPercent(parsed);
+                                    viewModel.setStopProfitPercent(parsed, mode: currentMode);
                                   }
                                 },
                               ),

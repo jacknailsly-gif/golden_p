@@ -61,4 +61,6 @@ test_jsdom.js
 test_regex.dart
 package.json
 package-lock.json
+*.rar
+*.zip
 

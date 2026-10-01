@@ -61,6 +61,7 @@ import 'package:golden_p/utils/app_theme.dart';
 import 'package:golden_p/views/splash_view.dart';
 import 'package:flutter_windowmanager_plus/flutter_windowmanager_plus.dart';
 import 'package:golden_p/services/security_service.dart';
+import 'package:golden_p/services/user_agent_service.dart';
 import 'dart:io';
 import 'package:golden_p/viewmodels/sequence_analyzer_viewmodel.dart';
 import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
@@ -84,6 +85,9 @@ void main() async {
 
   // เปิดใช้งานความปลอดภัย
   await SecurityService.checkSecurity();
+
+  // ตรวจจับและปรับแต่ง User-Agent เป็นเครื่องจริงอัตโนมัติ (Anti-Detection / Stealth)
+  await UserAgentService.init();
 
   // หน้าจอไม่ดับ และ ป้องกัน screenshot
   if (Platform.isAndroid) {

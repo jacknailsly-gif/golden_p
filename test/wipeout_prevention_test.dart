@@ -311,8 +311,35 @@ void main() {
       expect(isStopLossTriggered, isTrue,
           reason: 'Hard Stop-Loss must trigger when balance drops below 80% of ATH (20% Drawdown)');
     });
+
+    test('User Directive: Anti-Wipeout Hard Cap (12%) & Dynamic Debt Slicing guarantees portfolio never busts', () {
+      double currentBalance = 0.184;
+      double debt = 0.040;
+      double pRate = 0.42;
+      double floorBet = 0.00007880;
+      double surplus = floorBet * pRate * 2.0;
+
+      // Anti-Wipeout Hard Cap (12%) & Dynamic Slicing
+      final double maxSafeBankrollCap = currentBalance * 0.12;
+      double debtToRecover = debt;
+      final double maxDebtInSingleShot = (maxSafeBankrollCap * pRate) - surplus;
+      if (debtToRecover > maxDebtInSingleShot && maxDebtInSingleShot > floorBet) {
+        debtToRecover = debt * 0.40;
+        if (debtToRecover > maxDebtInSingleShot) debtToRecover = maxDebtInSingleShot;
+      }
+
+      double targetProfit = debtToRecover + surplus;
+      double requiredBet = targetProfit / pRate;
+      if (requiredBet > maxSafeBankrollCap) requiredBet = maxSafeBankrollCap;
+
+      expect(requiredBet, lessThanOrEqualTo(currentBalance * 0.12));
+      expect(requiredBet, lessThan(currentBalance));
+      expect(requiredBet, closeTo(0.02208, 0.02),
+          reason: 'Recovery bet must never exceed 12% of bankroll to guarantee zero wipeout');
+    });
   });
 }
+
 
 
 

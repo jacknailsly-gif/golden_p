@@ -99,6 +99,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
         },
         body: jsonEncode({'status': status}),
       );
+      if (!mounted) return;
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Status updated to ${status.toUpperCase()}'),
@@ -110,6 +111,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to update status'), backgroundColor: Colors.orange));
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
@@ -121,6 +123,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
         Uri.parse('${AuthService.adminBaseUrl}/users/$userId'),
         headers: {'Authorization': 'Bearer $token'},
       );
+      if (!mounted) return;
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('User deleted successfully'),
@@ -132,6 +135,7 @@ class _AdminDashboardViewState extends State<AdminDashboardView> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to delete user'), backgroundColor: Colors.orange));
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }

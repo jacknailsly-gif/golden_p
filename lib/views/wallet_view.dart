@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class WalletView extends StatefulWidget {
-  const WalletView({Key? key}) : super(key: key);
+  const WalletView({super.key});
 
   @override
   State<WalletView> createState() => _WalletViewState();
@@ -103,7 +103,7 @@ class _WalletViewState extends State<WalletView> {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: _primaryColor.withOpacity(0.3),
+            color: _primaryColor.withValues(alpha: 0.3),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -113,7 +113,7 @@ class _WalletViewState extends State<WalletView> {
           end: Alignment.bottomRight,
           colors: [
             _primaryColor,
-            _primaryColor.withOpacity(0.8),
+            _primaryColor.withValues(alpha: 0.8),
           ],
         ),
       ),
@@ -123,7 +123,7 @@ class _WalletViewState extends State<WalletView> {
           Text(
             'Total Balance',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.9),
+              color: Colors.white.withValues(alpha: 0.9),
               fontSize: 16,
               fontWeight: FontWeight.w500,
             ),
@@ -145,14 +145,14 @@ class _WalletViewState extends State<WalletView> {
               Text(
                 'Available: \$1,000.00',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
+                  color: Colors.white.withValues(alpha: 0.9),
                   fontSize: 14,
                 ),
               ),
               Text(
                 'In Play: \$250.00',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
+                  color: Colors.white.withValues(alpha: 0.9),
                   fontSize: 14,
                 ),
               ),
@@ -181,7 +181,7 @@ class _WalletViewState extends State<WalletView> {
                 borderRadius: BorderRadius.circular(16),
               ),
               elevation: 4,
-              shadowColor: _primaryColor.withOpacity(0.4),
+              shadowColor: _primaryColor.withValues(alpha: 0.4),
             ),
             child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -259,7 +259,7 @@ class _WalletViewState extends State<WalletView> {
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.04),
+                color: Colors.black.withValues(alpha: 0.04),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
               ),
@@ -270,16 +270,16 @@ class _WalletViewState extends State<WalletView> {
             leading: Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: tx['iconColor'].withOpacity(0.15),
+                color: (tx['iconColor'] as Color).withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                tx['icon'],
-                color: tx['iconColor'],
+                tx['icon'] as IconData,
+                color: tx['iconColor'] as Color,
               ),
             ),
             title: Text(
-              tx['title'],
+              tx['title'] as String,
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
@@ -291,7 +291,7 @@ class _WalletViewState extends State<WalletView> {
               child: Row(
                 children: [
                   Text(
-                    tx['date'],
+                    tx['date'] as String,
                     style: const TextStyle(
                       color: Colors.grey,
                       fontSize: 13,
@@ -301,7 +301,7 @@ class _WalletViewState extends State<WalletView> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.1),
+                      color: statusColor.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(

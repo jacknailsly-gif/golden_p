@@ -660,46 +660,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     final targetMode = mode ?? gameMode;
     _controllersByMode[targetMode] = controller;
     
-    // [API Interceptor] Register JS Handler for instant balance updates
-    try {
-      controller.addJavaScriptHandler(
-        handlerName: 'onNetworkActivity', 
-        callback: (args) {
-          // Trigger fast balance update immediately after casino network responds
-          updateBalanceFast();
-        }
-      );
-
-      final jsHook = '''
-        (function() {
-            if (window._apiHooked) return;
-            window._apiHooked = true;
-            
-            const originalFetch = window.fetch;
-            window.fetch = async function() {
-                const response = await originalFetch.apply(this, arguments);
-                if (window.flutter_inappwebview) {
-                   window.flutter_inappwebview.callHandler('onNetworkActivity');
-                }
-                return response;
-            };
-
-            const originalOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function() {
-                this.addEventListener('load', function() {
-                    if (window.flutter_inappwebview) {
-                       window.flutter_inappwebview.callHandler('onNetworkActivity');
-                    }
-                });
-                originalOpen.apply(this, arguments);
-            };
-        })();
-      ''';
-      controller.evaluateJavascript(source: jsHook);
-    } catch (e) {
-      debugPrint('⚠️ [API Hook] Failed to inject network observer: $e');
-    }
-
+    // 🛡️ Stealth: Do not tamper with window.fetch / XMLHttpRequest to preserve [native code] integrity
     startLiveBalanceUpdates();
   }
 

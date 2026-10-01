@@ -193,5 +193,81 @@ void main() {
         expect(vm.getProfitForMode(GameMode.towers, coinType: coinName), closeTo(c['profit'] as double, 0.001));
       }
     });
+
+    test('Stop profit triggers 2-3 hour break and resets profit to 0.000% on both Towers and Mines', () async {
+      final overlayVM = OverlayButtonsViewModel();
+      await overlayVM.initialize();
+      final analyzerTowers = SequenceAnalyzerViewModel(gameMode: GameMode.towers);
+      final analyzerMines = SequenceAnalyzerViewModel(gameMode: GameMode.mines);
+      overlayVM.setSequenceAnalyzerViewModel(analyzerTowers, mode: GameMode.towers);
+      overlayVM.setSequenceAnalyzerViewModel(analyzerMines, mode: GameMode.mines);
+
+      // --- TOWERS TEST ---
+      analyzerTowers.applyParsedBalanceResultForTesting(GameMode.towers, {
+        'coin': 'DOGE',
+        'balance': '1.00000000',
+      });
+      overlayVM.setStopProfitEnabled(true, mode: GameMode.towers);
+      overlayVM.setStopProfitPercent(10.0, mode: GameMode.towers);
+      expect(overlayVM.isBreakActiveFor(GameMode.towers), isFalse);
+
+      // Towers balance rises to +12%
+      analyzerTowers.applyParsedBalanceResultForTesting(GameMode.towers, {
+        'coin': 'DOGE',
+        'balance': '1.12000000',
+      });
+      expect(analyzerTowers.getProfitForMode(GameMode.towers), closeTo(12.0, 0.001));
+
+      // Inline TP triggered
+      final towersTriggered = await overlayVM.testCheckStopProfitInline(1, mode: GameMode.towers);
+      expect(towersTriggered, isTrue);
+
+      // Break must be 2 to 3 hours (120 to 180 minutes)
+      expect(overlayVM.isBreakActiveFor(GameMode.towers), isTrue);
+      final towersBreak = overlayVM.getBreakRemainingDuration(GameMode.towers);
+      expect(towersBreak.inMinutes, greaterThanOrEqualTo(119));
+      expect(towersBreak.inMinutes, lessThanOrEqualTo(180));
+
+      // Countdown formatted as HH:mm:ss
+      final formattedTowers = overlayVM.getBreakRemainingFormatted(GameMode.towers);
+      expect(formattedTowers, matches(r'^\d{2}:\d{2}:\d{2}$'));
+
+      // Profit reset to 0.000%
+      expect(analyzerTowers.getProfitForMode(GameMode.towers), 0.0);
+
+      // --- MINES TEST (Mode Isolated) ---
+      analyzerMines.applyParsedBalanceResultForTesting(GameMode.mines, {
+        'coin': 'POL',
+        'balance': '2.00000000',
+      });
+      overlayVM.setStopProfitEnabled(true, mode: GameMode.mines);
+      overlayVM.setStopProfitPercent(15.0, mode: GameMode.mines);
+      expect(overlayVM.isBreakActiveFor(GameMode.mines), isFalse);
+
+      // Mines balance rises to +20%
+      analyzerMines.applyParsedBalanceResultForTesting(GameMode.mines, {
+        'coin': 'POL',
+        'balance': '2.40000000',
+      });
+      expect(analyzerMines.getProfitForMode(GameMode.mines), closeTo(20.0, 0.001));
+
+      final minesTriggered = await overlayVM.testCheckStopProfitInline(1, mode: GameMode.mines);
+      expect(minesTriggered, isTrue);
+
+      expect(overlayVM.isBreakActiveFor(GameMode.mines), isTrue);
+      final minesBreak = overlayVM.getBreakRemainingDuration(GameMode.mines);
+      expect(minesBreak.inMinutes, greaterThanOrEqualTo(119));
+      expect(minesBreak.inMinutes, lessThanOrEqualTo(180));
+      expect(analyzerMines.getProfitForMode(GameMode.mines), 0.0);
+
+      // Cancel Towers break
+      overlayVM.cancelBreak(mode: GameMode.towers);
+      expect(overlayVM.isBreakActiveFor(GameMode.towers), isFalse);
+      expect(overlayVM.getBreakRemainingFormatted(GameMode.towers), '00:00:00');
+      // Mines break is still active
+      expect(overlayVM.isBreakActiveFor(GameMode.mines), isTrue);
+
+      overlayVM.dispose();
+    });
   });
 }

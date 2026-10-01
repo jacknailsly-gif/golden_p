@@ -6,6 +6,7 @@ import 'package:golden_p/viewmodels/overlay_buttons_viewmodel.dart';
 import 'package:golden_p/views/tabs/wallet_tab_view.dart';
 import 'package:golden_p/views/tabs/analytics_tab_view.dart';
 import 'package:golden_p/views/sequence_analyzer_view.dart';
+import 'package:golden_p/services/network_guard_service.dart';
 
 class SuperAppTabsView extends StatefulWidget {
   const SuperAppTabsView({super.key});
@@ -16,6 +17,19 @@ class SuperAppTabsView extends StatefulWidget {
 
 class _SuperAppTabsViewState extends State<SuperAppTabsView> {
   int _currentTabIndex = 1; // Default to Towers tab
+
+  @override
+  void initState() {
+    super.initState();
+    // 🛡️ เริ่มระบบตรวจจับและสั่งปิด Wi-Fi อัตโนมัติตลอดเวลาที่เปิดแอป
+    NetworkGuardService.startContinuousMonitoring();
+  }
+
+  @override
+  void dispose() {
+    NetworkGuardService.stopContinuousMonitoring();
+    super.dispose();
+  }
 
   final List<Widget> _tabs = const [
     WalletTabView(),
@@ -31,7 +45,12 @@ class _SuperAppTabsViewState extends State<SuperAppTabsView> {
       listen: false,
     );
 
-    return Scaffold(
+    return ValueListenableBuilder<bool>(
+      valueListenable: NetworkGuardService.isWifiBlockedNotifier,
+      builder: (context, isBlocked, _) {
+        return Stack(
+          children: [
+            Scaffold(
       body: IndexedStack(
         index: _currentTabIndex,
         children: _tabs,
@@ -100,6 +119,70 @@ class _SuperAppTabsViewState extends State<SuperAppTabsView> {
           ),
         ),
       ),
+    ),
+    if (isBlocked)
+              Positioned.fill(
+                child: Container(
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.98),
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.wifi_off_rounded, color: Color(0xFFEF4444), size: 72),
+                        const SizedBox(height: 16),
+                        const Text(
+                          "ไม่อนุญาตให้เปิดใช้งาน WI-FI",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          "ในขณะที่เปิดใช้งานแอป golden_p ระบบจะไม่อนุญาตให้เปิด Wi-Fi เพื่อความปลอดภัยของบัญชีและการหลบเลี่ยงการถูกแบน\n\nกรุณาปิด Wi-Fi แล้วใช้งานผ่านเน็ตมือถือ (Cellular Data) เท่านั้น",
+                          style: TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 14,
+                            height: 1.5,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 24),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.flash_on_rounded),
+                          label: const Text("บังคับปิด Wi-Fi ทันที (Force Kill)"),
+                          onPressed: () async {
+                            await NetworkGuardService.disableWifi();
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEF4444),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                            textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.settings, color: Color(0xFF38BDF8)),
+                          label: const Text("เปิดการตั้งค่า Wi-Fi เพื่อปิด"),
+                          onPressed: () => NetworkGuardService.openWifiSettings(),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF38BDF8),
+                            side: const BorderSide(color: Color(0xFF38BDF8)),
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:golden_p/views/super_app_tabs_view.dart';
 import 'package:golden_p/services/auth_service.dart';
+import 'package:golden_p/services/network_guard_service.dart';
 
 class SplashView extends StatefulWidget {
   const SplashView({super.key});
@@ -52,8 +53,112 @@ class _SplashViewState extends State<SplashView> with TickerProviderStateMixin {
       });
     }
 
+    // 🛡️ ตรวจสอบการเชื่อมต่อ Wi-Fi บน Android เครื่องจริง (Emulator ข้ามได้)
+    bool canProceed = await NetworkGuardService.canProceed();
+    if (!canProceed) {
+      // สั่งปิด Wi-Fi ทันทีอัตโนมัติ
+      await NetworkGuardService.disableWifi();
+      await Future.delayed(const Duration(milliseconds: 300));
+      canProceed = await NetworkGuardService.canProceed();
+    }
+    if (!canProceed && mounted) {
+      _showWifiBlockedDialog();
+      return;
+    }
+
     await Future.delayed(const Duration(milliseconds: 800));
     _navigateToLogin();
+  }
+
+  Timer? _wifiPollTimer;
+
+  void _showWifiBlockedDialog() {
+    if (!mounted) return;
+    _wifiPollTimer?.cancel();
+
+    // Polling ตรวจสอบทุก 400ms พร้อมสั่งปิด Wi-Fi ต่อเนื่อง เมื่อปิดแล้วเข้าแอปทันที
+    _wifiPollTimer = Timer.periodic(const Duration(milliseconds: 400), (timer) async {
+      final allowed = await NetworkGuardService.canProceed();
+      if (allowed && mounted) {
+        timer.cancel();
+        Navigator.of(context, rootNavigator: true).pop(); // ปิด dialog
+        _navigateToLogin();
+      } else {
+        await NetworkGuardService.disableWifi();
+      }
+    });
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF0F172A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xFFEF4444), width: 1.5),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.wifi_off_rounded, color: Color(0xFFEF4444), size: 28),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    "ตรวจพบการเชื่อมต่อ WI-FI",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: const Text(
+              "ระบบตรวจพบว่ากำลังเชื่อมต่อผ่าน Wi-Fi\n\nเพื่อความปลอดภัยสูงสุดและป้องกันความเสี่ยงโดนแบนบัญชีจากเว็บคาสิโน กรุณา \"ปิด Wi-Fi\" และใช้งานผ่านสัญญาณเน็ตมือถือ (Cellular Data) เท่านั้น จึงจะสามารถเปิดแอปได้ตามปกติ",
+              style: TextStyle(
+                color: Color(0xFF94A3B8),
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await NetworkGuardService.openWifiSettings();
+                },
+                child: const Text(
+                  "เปิดการตั้งค่า Wi-Fi",
+                  style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                ),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.flash_on_rounded, size: 18),
+                label: const Text("บังคับปิด Wi-Fi ทันที"),
+                onPressed: () async {
+                  await NetworkGuardService.disableWifi();
+                  final allowed = await NetworkGuardService.canProceed();
+                  if (allowed && mounted) {
+                    _wifiPollTimer?.cancel();
+                    Navigator.of(ctx).pop();
+                    _navigateToLogin();
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFEF4444),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _navigateToLogin() {
@@ -74,6 +179,7 @@ class _SplashViewState extends State<SplashView> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _wifiPollTimer?.cancel();
     _glowController.dispose();
     _spinController.dispose();
     super.dispose();

@@ -1502,6 +1502,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
       pnl = ((curBalance - state.sessionStartBalance!) / state.sessionStartBalance!) * 100;
     }
 
+    // 🛡️ Absolute guard: Stop Profit can NEVER trigger during negative profit or zero profit under any circumstance.
+    if (pnl <= 0.0 || pnl <= 0.00000001) {
+      return false;
+    }
+
     if (pnl >= targetPercent) {
       await _handleStopProfitReached(
         mode: targetMode,
@@ -2715,8 +2720,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
           }
           final int recentLosses = state.recentRoundsHistory.where((w) => !w).length;
           if (recentLosses >= 6 && state.recentRoundsHistory.length >= 8) {
-            debugPrint('🛑 [SHIELD 4 / BAD RUN] Casino Counter-Measure Detected! >= 6 losses in 10 rounds!');
-            await Future.delayed(const Duration(seconds: 300));
+            debugPrint('🛑 [SHIELD 4 / BAD RUN] Casino Counter-Measure Detected! >= 6 losses in 10 rounds (300s stall removed)!');
           }
 
           // 🛡️ Post-Loss Handling:

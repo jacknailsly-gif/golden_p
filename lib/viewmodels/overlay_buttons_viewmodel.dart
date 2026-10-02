@@ -15,10 +15,19 @@ import 'package:golden_p/services/network_guard_service.dart';
 
 /// 🎯 ปัดเศษเป็นเลขนัยสำคัญ 2-3 ตัวแบบยืดหยุ่น (User Directive)
 /// ปัดเศษคณิตศาสตร์ทั่วไป 3 ตัว หากลงท้ายด้วย 0 ให้ตัดเหลือ 2 ตัว เช่น 0.0012 หรือ 0.00125
-double roundToSignificantDigits(double value, {int digits = 3}) {
+/// หากกำหนด floorOnly: true จะปัดเศษลงเท่านั้น เพื่อการันตีไม่ให้เกินยอดเงินคงเหลือในกระเป๋า ("ห้ามทวงเกีนยอดที่มีในบันชี")
+double roundToSignificantDigits(double value, {int digits = 3, bool floorOnly = false}) {
   if (value <= 0.0 || digits <= 0) return value;
   final String exp = value.toStringAsExponential(digits - 1);
-  final double parsed = double.parse(exp);
+  double parsed = double.parse(exp);
+  if (floorOnly && parsed > value) {
+    final int expIdx = exp.indexOf('e');
+    final int d = (expIdx != -1) ? int.parse(exp.substring(expIdx + 1)) : (log(value) / ln10).floor();
+    final double step = pow(10.0, d - (digits - 1)).toDouble();
+    while (parsed > value) {
+      parsed = double.parse((parsed - step).toStringAsFixed(8));
+    }
+  }
   String fixed = parsed.toStringAsFixed(8);
   if (fixed.contains('.')) {
     fixed = fixed.replaceAll(RegExp(r'0*$'), '');
@@ -3157,14 +3166,30 @@ class OverlayButtonsViewModel with ChangeNotifier {
   }
 
   /// ⌨️ Guaranteed Complete Character-by-Character Typing with Virtual Keyboard Prevention
-  Future<void> _setBetAmount(double amount, {GameMode? mode}) async {
+  Future<void> _setBetAmount(double amount, {GameMode? mode, double? maxBalance}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
     final controller = getWebViewController(targetMode);
     if (controller == null) return;
     try {
-      // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
-      final double formattedAmount = roundToSignificantDigits(amount, digits: 3);
+      double betToFormat = amount;
+      final double effectiveBalance = maxBalance ?? (state.lastSettledBalance > 0.00000001 ? state.lastSettledBalance : 0.0);
+
+      // 🎯 คำสั่งผู้ใช้: "ห้ามทวงเกีนยอดที่มีในบันชี" (Absolute Balance Hard Cap)
+      if (effectiveBalance > 0.00000001 && betToFormat > effectiveBalance) {
+        betToFormat = effectiveBalance;
+      }
+
+      final bool isCapped = (effectiveBalance > 0.00000001 && betToFormat >= effectiveBalance * 0.999);
+      double formattedAmount = roundToSignificantDigits(betToFormat, digits: 3, floorOnly: isCapped);
+
+      if (effectiveBalance > 0.00000001 && formattedAmount > effectiveBalance) {
+        formattedAmount = roundToSignificantDigits(effectiveBalance, digits: 3, floorOnly: true);
+        if (formattedAmount > effectiveBalance) {
+          formattedAmount = effectiveBalance;
+        }
+      }
+
       state.currentBetAmount = formattedAmount;
       String amountStr = formattedAmount.toStringAsFixed(8);
       if (amountStr.contains('.')) {
@@ -3905,16 +3930,13 @@ class OverlayButtonsViewModel with ChangeNotifier {
     double targetProfit = debtToEscalate + surplusProfitMargin;
     double requiredBet = targetProfit / pRate;
 
-    // ต้องไม่เกินยอดเงินคงเหลือจริงในบัญชี (ป้องกัน Error ยอดเงินไม่พอ)
-    if (requiredBet > currentBalance && currentBalance > 0) {
-      requiredBet = currentBalance;
+    // 🎯 คำสั่งผู้ใช้: "ห้ามทวงเกีนยอดที่มีในบันชี" (Absolute Hard Invariant)
+    // 1. ถ้าคำนวณเบทแล้วเกินยอดเงินในบัญชี ให้จำกัดไม่ให้เกิน currentBalance
+    if (currentBalance > 0.00000001 && requiredBet > currentBalance) {
       debugPrint(
-        '⚠️ [UNCAPPED ALL-IN] [${targetMode.displayName}] หนี้เกินทุน! All-in ที่ ${requiredBet.toStringAsFixed(8)}',
+        '⚠️ [BALANCE CLAMP 🛡️] [${targetMode.displayName}] เบททวงที่คำนวณได้ (${requiredBet.toStringAsFixed(8)}) เกินยอดเงินในบัญชี (${currentBalance.toStringAsFixed(8)}) -> จำกัดไม่ให้เกินยอดเงินคงเหลือตามคำสั่งผู้ใช้',
       );
-    }
-
-    if (requiredBet < minRecoveryBet) {
-      requiredBet = minRecoveryBet;
+      requiredBet = currentBalance;
     }
 
     state.remainingRecoverySlices = 0;
@@ -3927,13 +3949,25 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = casinoHardLimit;
     }
 
-    // Floor protection: ต้องไม่ต่ำกว่า Base Bet ขั้นต่ำ
-    if (requiredBet < floorBet) {
+    // Floor protection: ต้องไม่ต่ำกว่า Base Bet ขั้นต่ำ (แต่ต้องไม่เกินยอดเงินในบัญชี)
+    if (requiredBet < floorBet && (currentBalance <= 0.00000001 || currentBalance >= floorBet)) {
       requiredBet = floorBet;
     }
 
     // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
-    requiredBet = roundToSignificantDigits(requiredBet, digits: 3);
+    // 🎯 คำสั่งผู้ใช้: "ห้ามทวงเกีนยอดที่มีในบันชี"
+    // หากยอดเบททวงแตะหรือใกล้เพดานเงินในบัญชี ให้ปัดลง (floorOnly: true) ป้องกันการปัดขึ้นจนเกินเงินในบัญชี
+    final bool isAtOrNearBalance = (currentBalance > 0.00000001 && requiredBet >= currentBalance * 0.999);
+    requiredBet = roundToSignificantDigits(requiredBet, digits: 3, floorOnly: isAtOrNearBalance);
+
+    // 🛡️ Final Absolute Invariant: ตรวจสอบขั้นเด็ดขาดว่า requiredBet ต้องไม่เกิน currentBalance โดยเด็ดขาด 100%
+    if (currentBalance > 0.00000001 && requiredBet > currentBalance) {
+      requiredBet = roundToSignificantDigits(currentBalance, digits: 3, floorOnly: true);
+      if (requiredBet > currentBalance) {
+        requiredBet = currentBalance;
+      }
+    }
+
     state.currentBetAmount = requiredBet;
     debugPrint(
       '🎯 [FULL 100% RECOVERY ⚡] [${targetMode.displayName}] ทวงเต็มหนี้ 100%: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวงเต็ม 100%: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
@@ -3942,8 +3976,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       '🎯 [SAFE DEBT RECOVERY ⚡] [${targetMode.displayName}] หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวงปลอดภัย: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',
     );
 
-    // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ เพื่อให้แน่ใจว่าเว็บรับยอดทวงหนี้ 100% เต็ม
-    await _setBetAmount(requiredBet, mode: targetMode);
+    // 🎯 สั่งพิมพ์ยอดเบททวงหนี้ลงในหน้าเว็บเสมอ พร้อมส่ง maxBalance ป้องกันพิมพ์เกินเงินในกระเป๋า 100%
+    await _setBetAmount(requiredBet, mode: targetMode, maxBalance: currentBalance);
 
   }
 }

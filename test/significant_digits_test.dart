@@ -52,5 +52,13 @@ void main() {
       expect(roundToSignificantDigits(0.0), equals(0.0));
       expect(roundToSignificantDigits(-5.0), equals(-5.0));
     });
+
+    test('floorOnly: true rounds DOWN and never exceeds original value', () {
+      expect(roundToSignificantDigits(0.05436, digits: 3, floorOnly: true), equals(0.0543));
+      expect(roundToSignificantDigits(0.05436, digits: 3, floorOnly: true), lessThanOrEqualTo(0.05436));
+      expect(roundToSignificantDigits(1.238, digits: 3, floorOnly: true), equals(1.23));
+      expect(roundToSignificantDigits(1.238, digits: 3, floorOnly: true), lessThanOrEqualTo(1.238));
+      expect(roundToSignificantDigits(0.001209, digits: 3, floorOnly: true), equals(0.0012));
+    });
   });
 }

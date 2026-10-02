@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../models/game_mode.dart';
 import '../../viewmodels/sequence_analyzer_viewmodel.dart';
 import '../../viewmodels/overlay_buttons_viewmodel.dart';
+import '../../models/stop_profit_milestone.dart';
 
 class AnalyticsTabView extends StatefulWidget {
   const AnalyticsTabView({super.key});
@@ -81,7 +82,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
               const SizedBox(height: 24),
               _buildTrainingDataSection(overlayVM),
               const SizedBox(height: 24),
-              _buildHistorySection(),
+              _buildProfitMilestonesSection(overlayVM),
             ],
           ),
         ),
@@ -605,82 +606,167 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
     );
   }
 
-  Widget _buildHistorySection() {
-    final history = [
-      {'date': 'Today', 'predictions': 12, 'wins': 8, 'winRate': '66.7%'},
-      {'date': 'Yesterday', 'predictions': 18, 'wins': 13, 'winRate': '72.2%'},
-      {'date': 'Last 7 Days', 'predictions': 95, 'wins': 68, 'winRate': '71.6%'},
-      {'date': 'Last 30 Days', 'predictions': 256, 'wins': 175, 'winRate': '68.4%'},
-    ];
+  Widget _buildProfitMilestonesSection(OverlayButtonsViewModel overlayVM) {
+    final milestones = overlayVM.profitMilestones;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Run History',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 12),
-        ...history.map((item) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E293B),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.05),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Row(
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item['date'] as String,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${item['predictions']} predictions • ${item['wins']} wins',
-                      style: const TextStyle(
-                        color: Color(0xFF94A3B8),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10B981).withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    item['winRate'] as String,
-                    style: const TextStyle(
-                      color: Color(0xFF10B981),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                    ),
+                Icon(Icons.emoji_events_rounded, color: Color(0xFFF59E0B), size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Profit Milestones History',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
             ),
-          );
-        }),
+            if (milestones.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.delete_outline, color: Color(0xFF94A3B8), size: 20),
+                tooltip: 'Clear Milestones History',
+                onPressed: () => overlayVM.clearProfitMilestones(),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (milestones.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.05),
+              ),
+            ),
+            child: const Column(
+              children: [
+                Icon(Icons.hourglass_empty_rounded, color: Color(0xFF64748B), size: 36),
+                SizedBox(height: 8),
+                Text(
+                  'No Profit Milestones Yet',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Sessions reaching Take-Profit target will be recorded here automatically.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF94A3B8),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          ...milestones.map((item) {
+            final String timeStr = '${item.timestamp.hour.toString().padLeft(2, '0')}:${item.timestamp.minute.toString().padLeft(2, '0')}';
+            final String dateStr = '${item.timestamp.day.toString().padLeft(2, '0')}/${item.timestamp.month.toString().padLeft(2, '0')}/${item.timestamp.year}';
+            final String resumeTimeStr = '${item.resumeTime.hour.toString().padLeft(2, '0')}:${item.resumeTime.minute.toString().padLeft(2, '0')}';
+            final String modeName = item.mode.displayName;
+            final bool isTowers = item.mode == GameMode.towers;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.25),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            isTowers ? Icons.account_balance_rounded : Icons.grid_view_rounded,
+                            color: isTowers ? const Color(0xFF60A5FA) : const Color(0xFFFBBF24),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            modeName,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '$dateStr • $timeStr',
+                            style: const TextStyle(
+                              color: Color(0xFF94A3B8),
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '+${item.pnlPercent.toStringAsFixed(2)}% 🎯',
+                          style: const TextStyle(
+                            color: Color(0xFF10B981),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Divider(color: Colors.white10, height: 1),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Ending Balance: ${item.endingBalance.toStringAsFixed(4)}',
+                        style: const TextStyle(
+                          color: Color(0xFFCBD5E1),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Text(
+                        'Break: ${item.breakMinutes} mins (Resumes $resumeTimeStr)',
+                        style: const TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
       ],
     );
   }

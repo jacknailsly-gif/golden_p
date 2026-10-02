@@ -12,6 +12,7 @@ import 'package:golden_p/services/training_data_logger.dart';
 import 'dart:async';
 import 'package:golden_p/services/dynamic_parameter_service.dart';
 import 'package:golden_p/services/network_guard_service.dart';
+import 'package:golden_p/models/stop_profit_milestone.dart';
 
 /// 🎯 ปัดเศษเป็นเลขนัยสำคัญ 2-3 ตัวแบบยืดหยุ่น (User Directive)
 /// ปัดเศษคณิตศาสตร์ทั่วไป 3 ตัว หากลงท้ายด้วย 0 ให้ตัดเหลือ 2 ตัว เช่น 0.0012 หรือ 0.00125
@@ -437,6 +438,27 @@ class OverlayButtonsViewModel with ChangeNotifier {
   final Map<GameMode, DateTime?> _breakEndTimeByMode = {};
   Timer? _breakCountdownTimer;
 
+  // Profit Milestones History (Take-Profit Sessions)
+  List<StopProfitMilestoneRecord> _profitMilestones = [];
+  List<StopProfitMilestoneRecord> get profitMilestones => List.unmodifiable(_profitMilestones);
+
+  void clearProfitMilestones() {
+    _profitMilestones.clear();
+    try {
+      _prefs.remove('profit_milestones_history');
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  void _saveMilestonesToPrefs() {
+    try {
+      final jsonList = _profitMilestones.map((m) => jsonEncode(m.toJson())).toList();
+      _prefs.setStringList('profit_milestones_history', jsonList);
+    } catch (e) {
+      debugPrint('Failed to save profit milestones: $e');
+    }
+  }
+
   InAppWebViewController? _webViewController;
   Offset _webViewOffset = Offset.zero;
   dynamic _sequenceAnalyzerViewModel;
@@ -703,6 +725,17 @@ class OverlayButtonsViewModel with ChangeNotifier {
     _recoveryProfitPercentByMode[GameMode.mines] = minesSaved;
 
     _webViewTextZoom = _prefs.getInt('webview_text_zoom') ?? 100;
+
+    final savedMilestones = _prefs.getStringList('profit_milestones_history');
+    if (savedMilestones != null && savedMilestones.isNotEmpty) {
+      try {
+        _profitMilestones = savedMilestones
+            .map((s) => StopProfitMilestoneRecord.fromJson(jsonDecode(s) as Map<String, dynamic>))
+            .toList();
+      } catch (e) {
+        debugPrint('Error loading profit milestones: $e');
+      }
+    }
   }
 
   void setRecoveryProfitPercent(double percent, {GameMode? mode}) {
@@ -1421,6 +1454,22 @@ class OverlayButtonsViewModel with ChangeNotifier {
     state.protectedPrincipal = curBalance * 0.97;
     state.resetDebt();
     state.consecutiveLossesStreak = 0;
+
+    // 🎯 Record Stop-Profit Milestone Session for Analytics History
+    final milestone = StopProfitMilestoneRecord(
+      timestamp: DateTime.now(),
+      mode: mode,
+      pnlPercent: pnl,
+      targetPercent: targetPercent,
+      endingBalance: curBalance,
+      breakMinutes: breakMinutes,
+      resumeTime: endTime,
+    );
+    _profitMilestones.insert(0, milestone);
+    if (_profitMilestones.length > 30) {
+      _profitMilestones = _profitMilestones.sublist(0, 30);
+    }
+    _saveMilestonesToPrefs();
 
     _stopReason =
         '🌟 STOP PROFIT reached at +${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Target: +${targetPercent.toStringAsFixed(4)}%). Taking a 2-3 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Profit reset to 0.000%.';

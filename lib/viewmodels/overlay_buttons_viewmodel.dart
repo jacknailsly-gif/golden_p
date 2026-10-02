@@ -158,6 +158,7 @@ class GameModeSessionState {
   int consecutiveBaseBetWinsRequiredForRecovery = 3; // 🌿 จำนวนตาที่ต้องชนะ Base Bet ติดต่อกันเพื่อพักฟื้น/ปลดล็อกจาก Circuit Breaker หรือทวงงวดถัดไป
   double recoverySliceFraction = 0.30; // 🍰 สัดส่วนผ่อนทวงหนี้ต่องวด (30% ต่อไม้)
   bool isCurrentlyRecoveryRound = false;
+  bool hasBaseBetBeenSet = false; // 🎯 เมื่อตั้ง Base Bet ลงหน้าเว็บแล้ว จะไม่พิมพ์หรือ Paste ซ้ำเมื่อชนะหรือแพ้ที่ไม่มีการทวงหนี้
   int ghostRoundCounter = 0;
   int staleWinsCount = 0;
   int staleLossesCount = 0;
@@ -1772,6 +1773,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         state.consecutiveLossesStreak = 0;
         state.observationRoundsRemaining = 0;
         state.isLossStreakBaseBetLocked = false;
+        state.hasBaseBetBeenSet = false;
 
         final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
         if (analyzer != null) {
@@ -2058,8 +2060,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
             break;
           }
 
-          // 🔄 หากตรวจพบ mismatch และตานี้เป็น Base Bet ให้พยายาม force set ซ้ำทุกๆ 500ms ทันที
-          if (!approvedForRecovery && (guardWaitMs % 500 == 0)) {
+          // 🔄 หากตรวจพบ mismatch และตานี้เป็น Base Bet ให้พยายาม force set ซ้ำทุกๆ 500ms ทันที (เฉพาะเมื่อยังไม่เคยตั้ง Base Bet)
+          if (!approvedForRecovery && !state.hasBaseBetBeenSet && (guardWaitMs % 500 == 0)) {
             await _forceSetBaseBet(mode: mode);
           }
 
@@ -3768,20 +3770,44 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
     state.isCurrentlyRecoveryRound = false;
+
+    final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
+    final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(targetMode);
+    final double defaultFloor = getFloorBetForMode(targetMode, coinType: coin);
+    final double floorBet = state.lockedBaseBet ?? _lockedBaseBetByMode[targetMode] ?? defaultFloor;
+
+    // 🎯 คำสั่งผู้ใช้: "เมื่อ Base bet ชนะ/แพ้แต่ไม่มีการทวงหนี้เกีด ห้ามไม่ต้องพิม ไม่ต้อง Paste อะไรทั้งนั้น"
+    // หากช่องเดิมพันบนหน้าเว็บมีค่า Base Bet ที่ถูกต้องอยู่แล้ว และเคยตั้งค่าแล้ว -> ข้ามการพิมพ์และการ Paste 100%
+    if (state.hasBaseBetBeenSet) {
+      double currentBet = await _getBetAmount(mode: targetMode);
+      if (currentBet > 0 && currentBet <= floorBet * 1.5) {
+        state.currentBetAmount = currentBet;
+        debugPrint('[BASE BET] 🟢 [${targetMode.displayName}] ช่องเดิมพันมี Base Bet อยู่แล้ว (${currentBet.toStringAsFixed(8)}) -> ข้ามการพิมพ์และการ Paste 100%');
+        return;
+      }
+    }
     
     final double targetBet = await _calculateDynamicBaseBet(mode: targetMode);
     state.currentBetAmount = targetBet;
 
+    double currentBet = await _getBetAmount(mode: targetMode);
+    if ((currentBet - targetBet).abs() < 0.00000001) {
+       state.hasBaseBetBeenSet = true;
+       return;
+    }
+
     // 1️⃣ First: Hardware-speed direct base bet set & MIN button trigger
     await _forceSetBaseBet(mode: targetMode);
 
-    double currentBet = await _getBetAmount(mode: targetMode);
+    currentBet = await _getBetAmount(mode: targetMode);
     if ((currentBet - targetBet).abs() < 0.00000001) {
+       state.hasBaseBetBeenSet = true;
        return;
     }
     
     debugPrint('[BASE BET] 🔄 [${targetMode.displayName}] Setting Base Bet: ${targetBet.toStringAsFixed(8)} (Floor: ${state.lockedBaseBet ?? _lockedBaseBetByMode[targetMode]})');
     await _setBetAmount(targetBet, mode: targetMode);
+    state.hasBaseBetBeenSet = true;
   }
 
   /// 🤝 Fluid Symbiotic Recovery Engine (ระบบทวงหนี้แบบต่อเนื่อง ยืดหยุ่น ไร้รอยต่อ และปลอดภัยสูงสุด)
@@ -3812,6 +3838,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
               : (state.sessionMaxBalance > 0.00000001 ? state.sessionMaxBalance : 0.0));
     }
     state.isCurrentlyRecoveryRound = true;
+    state.hasBaseBetBeenSet = false;
 
     double pRate = getRecoveryProfitPercent(targetMode);
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;

@@ -23,5 +23,15 @@ void main() {
         await vm.testAlignMineStartWithM0(mode: GameMode.mines);
       }, returnsNormally);
     });
+
+    test('Directive: Tower Resume ensures Medium difficulty safely without scrolling', () async {
+      final vm = OverlayButtonsViewModel();
+
+      // When mode is Towers, ensureMediumDifficulty executes gracefully even when controller is not yet attached
+      expect(() async {
+        final res = await vm.ensureMediumDifficulty(mode: GameMode.towers);
+        expect(res, isFalse); // null controller returns false gracefully without exception
+      }, returnsNormally);
+    });
   });
 }

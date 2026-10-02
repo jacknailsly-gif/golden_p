@@ -1756,7 +1756,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
           debugPrint('💎 [24/7 RESUME] [${mode.displayName}] เลื่อนหน้าเว็บให้ปุ่ม Start ตรงกับ Marker M0...');
           await _alignMineStartWithM0(mode: mode);
         } else {
-          debugPrint('🏰 [24/7 RESUME] [${mode.displayName}] Tower: Refresh หน้าเว็บเท่านั้น ไม่มีการเลื่อนขึ้นตามคำสั่งผู้ใช้');
+          debugPrint('🏰 [24/7 RESUME] [${mode.displayName}] Tower: Refresh หน้าเว็บแล้วเลือก Medium (ไม่เลื่อนขึ้น) ก่อนเล่นต่อตามคำสั่งผู้ใช้');
+          await ensureMediumDifficulty(mode: mode);
         }
 
         // รีเซ็ตฐานข้อมูลเซสชันใหม่หลังพักเสร็จ

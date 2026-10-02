@@ -13,6 +13,22 @@ import 'dart:async';
 import 'package:golden_p/services/dynamic_parameter_service.dart';
 import 'package:golden_p/services/network_guard_service.dart';
 
+/// 🎯 ปัดเศษเป็นเลขนัยสำคัญ 2-3 ตัวแบบยืดหยุ่น (User Directive)
+/// ปัดเศษคณิตศาสตร์ทั่วไป 3 ตัว หากลงท้ายด้วย 0 ให้ตัดเหลือ 2 ตัว เช่น 0.0012 หรือ 0.00125
+double roundToSignificantDigits(double value, {int digits = 3}) {
+  if (value <= 0.0 || digits <= 0) return value;
+  final String exp = value.toStringAsExponential(digits - 1);
+  final double parsed = double.parse(exp);
+  String fixed = parsed.toStringAsFixed(8);
+  if (fixed.contains('.')) {
+    fixed = fixed.replaceAll(RegExp(r'0*$'), '');
+    if (fixed.endsWith('.')) {
+      fixed = fixed.substring(0, fixed.length - 1);
+    }
+  }
+  return double.parse(fixed);
+}
+
 /// Explicit state machine for Recovery and Observation lifecycle
 enum RecoveryState {
   normal,         // Standard operation with Base Bet or 1-2 loss recovery
@@ -1904,7 +1920,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
       final roundCoin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(mode);
       final double roundFloor = getFloorBetForMode(mode, coinType: roundCoin);
       // 🛡️ Option 2: Dynamic Base Bet with Floor Guard (balance / 10,000 clamped to roundFloor)
-      final double dynamicBase = mode.calculateBaseBet(currentBalance, roundFloor, coin: roundCoin);
+      // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
+      double dynamicBase = mode.calculateBaseBet(currentBalance, roundFloor, coin: roundCoin);
+      dynamicBase = roundToSignificantDigits(dynamicBase, digits: 3);
+      if (dynamicBase < roundFloor) {
+        dynamicBase = roundFloor;
+      }
       state.lockedBaseBet = dynamicBase;
       _lockedBaseBetByMode[mode] = dynamicBase;
       final double currentFloorBet = dynamicBase;
@@ -3142,8 +3163,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final controller = getWebViewController(targetMode);
     if (controller == null) return;
     try {
-      state.currentBetAmount = amount;
-      String amountStr = amount.toStringAsFixed(8);
+      // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
+      final double formattedAmount = roundToSignificantDigits(amount, digits: 3);
+      state.currentBetAmount = formattedAmount;
+      String amountStr = formattedAmount.toStringAsFixed(8);
       if (amountStr.contains('.')) {
         amountStr = amountStr.replaceAll(RegExp(r'0*$'), '');
         if (amountStr.endsWith('.')) {
@@ -3653,7 +3676,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final double currentBalance = await _getBalanceDouble(mode: targetMode);
     // 🛡️ Option 2: Dynamic แบบจำกัดขั้นต่ำ (Floor Guard)
     // คำนวณ balance / 10,000 แต่หากพอร์ตเล็กลงจะไม่ให้ต่ำกว่า Floor ขั้นต่ำของเหรียญนั้นๆ
-    final double calculated = targetMode.calculateBaseBet(currentBalance, defaultFloor, coin: coin);
+    double calculated = targetMode.calculateBaseBet(currentBalance, defaultFloor, coin: coin);
+    // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
+    calculated = roundToSignificantDigits(calculated, digits: 3);
+    if (calculated < defaultFloor) {
+      calculated = defaultFloor;
+    }
     state.lockedBaseBet = calculated;
     _lockedBaseBetByMode[targetMode] = calculated;
     return calculated;
@@ -3672,10 +3700,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final coin = state.activeCoinType ?? analyzer?.getCoinTypeForMode(targetMode);
     final double defaultFloor = getFloorBetForMode(targetMode, coinType: coin);
     final double targetBet = state.lockedBaseBet ?? _lockedBaseBetByMode[targetMode] ?? defaultFloor;
-    state.currentBetAmount = targetBet;
+    final double formattedBet = roundToSignificantDigits(targetBet, digits: 3);
+    state.currentBetAmount = formattedBet;
     state.isCurrentlyRecoveryRound = false;
 
-    String targetStr = targetBet.toStringAsFixed(8);
+    String targetStr = formattedBet.toStringAsFixed(8);
     if (targetStr.contains('.')) {
       targetStr = targetStr.replaceAll(RegExp(r'0*$'), '');
       if (targetStr.endsWith('.')) {
@@ -3903,7 +3932,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       requiredBet = floorBet;
     }
 
-    requiredBet = double.parse(requiredBet.toStringAsFixed(8));
+    // 🎯 คำสั่งผู้ใช้: "พิมเลบนัยสำคันแค่ 2-3 ตัวเท่านั้นครับ ทั้งยอดทวง และ Base bet"
+    requiredBet = roundToSignificantDigits(requiredBet, digits: 3);
     state.currentBetAmount = requiredBet;
     debugPrint(
       '🎯 [FULL 100% RECOVERY ⚡] [${targetMode.displayName}] ทวงเต็มหนี้ 100%: ${state.totalAccumulatedLoss.toStringAsFixed(8)} | เบททวงเต็ม 100%: ${requiredBet.toStringAsFixed(8)} | ยอดเงิน: ${currentBalance.toStringAsFixed(8)}',

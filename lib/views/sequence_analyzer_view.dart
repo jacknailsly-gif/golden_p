@@ -603,6 +603,7 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
               useWideViewPort: false,
               loadWithOverviewMode: false,
               supportZoom: false,
+              allowBackgroundAudioPlaying: true,
             ),
             shouldOverrideUrlLoading: (controller, navigationAction) async {
               final url = navigationAction.request.url;

@@ -11,6 +11,7 @@ import 'package:golden_p/engines/omni_matrix_engine.dart';
 import 'package:golden_p/services/training_data_logger.dart';
 import 'dart:async';
 import 'package:golden_p/services/dynamic_parameter_service.dart';
+import 'package:golden_p/services/network_guard_service.dart';
 
 /// Explicit state machine for Recovery and Observation lifecycle
 enum RecoveryState {
@@ -1188,6 +1189,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final int runToken = state.runToken;
     state.isRunning = true;
     _isRunning = true;
+    unawaited(NetworkGuardService.startBackgroundService());
     state.consecutiveLossesStreak = 0;
     state.lowestObservedBet = null;
     _stopReason = '';
@@ -1286,6 +1288,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     if (!isAnyRunning) {
       _stopPnLMonitor();
       _sessionStartTime = null;
+      unawaited(NetworkGuardService.stopBackgroundService());
     }
     if (!_isDisposed) {
       notifyListeners();
@@ -2799,6 +2802,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     }
     _isRunning = false;
     _stopPnLMonitor();
+    unawaited(NetworkGuardService.stopBackgroundService());
     super.dispose();
   }
 

@@ -41,6 +41,15 @@ class MainActivity : FlutterActivity() {
                     val success = disableWifi()
                     result.success(success)
                 }
+                "startBackgroundService" -> {
+                    result.success(startBotService())
+                }
+                "stopBackgroundService" -> {
+                    result.success(stopBotService())
+                }
+                "isBackgroundServiceRunning" -> {
+                    result.success(BotBackgroundService.isRunning)
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -286,5 +295,35 @@ class MainActivity : FlutterActivity() {
         }
 
         return disabled
+    }
+
+    private fun startBotService(): Boolean {
+        return try {
+            val intent = Intent(this, BotBackgroundService::class.java).apply {
+                action = BotBackgroundService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to start BotBackgroundService: ${e.message}")
+            false
+        }
+    }
+
+    private fun stopBotService(): Boolean {
+        return try {
+            val intent = Intent(this, BotBackgroundService::class.java).apply {
+                action = BotBackgroundService.ACTION_STOP
+            }
+            startService(intent)
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to stop BotBackgroundService: ${e.message}")
+            false
+        }
     }
 }

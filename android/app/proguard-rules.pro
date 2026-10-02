@@ -77,3 +77,7 @@
 # Keep classes that might be referenced from native code
 -keep class org.tensorflow.lite.task.** { *; }
 -keep class org.tensorflow.lite.metadata.** { *; }
+
+# Keep Golden_p Bot Background Service
+-keep class com.example.golden_p.BotBackgroundService { *; }
+-keepclassmembers class com.example.golden_p.BotBackgroundService { *; }

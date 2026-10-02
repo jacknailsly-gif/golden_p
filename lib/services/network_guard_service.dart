@@ -130,4 +130,40 @@ class NetworkGuardService {
 
     return true;
   }
+
+  /// 🛡️ เริ่มต้น Foreground Service เพื่อให้บอททำงานต่อเนื่องในพื้นหลัง 100% (แม้สลับไปแอปอื่น)
+  static Future<bool> startBackgroundService() async {
+    if (!_isAndroid) return true;
+    try {
+      final bool? result = await _channel.invokeMethod<bool>('startBackgroundService');
+      return result ?? false;
+    } catch (e) {
+      debugPrint('[NETWORK GUARD] Error starting background service: $e');
+      return false;
+    }
+  }
+
+  /// 🛡️ สั่งหยุด Foreground Service เมื่อหยุดบอท เพื่อคืนค่าทรัพยากร
+  static Future<bool> stopBackgroundService() async {
+    if (!_isAndroid) return true;
+    try {
+      final bool? result = await _channel.invokeMethod<bool>('stopBackgroundService');
+      return result ?? false;
+    } catch (e) {
+      debugPrint('[NETWORK GUARD] Error stopping background service: $e');
+      return false;
+    }
+  }
+
+  /// 🛡️ ตรวจสอบสถานะการทำงานของ Background Service
+  static Future<bool> isBackgroundServiceRunning() async {
+    if (!_isAndroid) return false;
+    try {
+      final bool? result = await _channel.invokeMethod<bool>('isBackgroundServiceRunning');
+      return result ?? false;
+    } catch (e) {
+      debugPrint('[NETWORK GUARD] Error checking background service: $e');
+      return false;
+    }
+  }
 }

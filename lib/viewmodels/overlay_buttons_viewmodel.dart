@@ -2725,7 +2725,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
           // 🛡️ Post-Loss Handling:
           OmniMatrixEngine.instance.rotateSeed(mode: mode);
-          await rotateWebClientSeed(mode: mode);
+          // 🛡️ Stealth Seed Rotation: หมุน Web Seed เฉพาะเมื่อแพ้ติดกัน >= 2 ตา หรืออยู่ในรอบทวงหนี้ เพื่อพฤติกรรมที่เป็นธรรมชาติ
+          if (state.consecutiveLossesStreak >= 2 || wasRecoveryRound) {
+            await rotateWebClientSeed(mode: mode);
+          }
 
           // 🛑 RECOVERY BET LOST: "ไม่ชนะ ทวงอีก 2 ตา ไม่ชนทั้ง2 ตา ก็กลับไป Base bet รอ ครบ 15-25 ตา แล้วทวงทันที"
           if (wasRecoveryRound) {
@@ -2940,9 +2943,26 @@ class OverlayButtonsViewModel with ChangeNotifier {
           final String clickScript = """
             (function(x, y, r, markerId) {
               function doClick(el, px = x, py = y) {
-                // 👤 Human touch micro-jitter (+/- 2px) to prevent robotic pixel-perfect detection
-                const jx = px + (Math.random() - 0.5) * 4;
-                const jy = py + (Math.random() - 0.5) * 4;
+                // 👤 Human touch contact jitter with natural finger radius (+/- 5px to 8px) & boundary safety
+                const rect = (el && typeof el.getBoundingClientRect === 'function') ? el.getBoundingClientRect() : null;
+                const jitterDist = 5.0 + Math.random() * 3.0; // 5px to 8px natural human finger contact radius
+                const jitterAngle = Math.random() * 2 * Math.PI;
+                let jx = px + Math.cos(jitterAngle) * jitterDist;
+                let jy = py + Math.sin(jitterAngle) * jitterDist;
+
+                // Boundary safety: keep coordinates safely within target element bounds
+                if (rect && rect.width > 8 && rect.height > 8) {
+                  const pad = Math.min(3.0, Math.min(rect.width, rect.height) * 0.1);
+                  jx = Math.max(rect.left + pad, Math.min(rect.right - pad, jx));
+                  jy = Math.max(rect.top + pad, Math.min(rect.bottom - pad, jy));
+                }
+
+                // 👤 Realistic human touch contact dimensions (typical capacitive finger contact ~18-28px diameter)
+                const touchWidth = 18.0 + Math.random() * 10.0;
+                const touchHeight = 18.0 + Math.random() * 10.0;
+                const radiusX = touchWidth / 2.0;
+                const radiusY = touchHeight / 2.0;
+
                 const base = {
                   bubbles: true,
                   cancelable: true,
@@ -2954,17 +2974,26 @@ class OverlayButtonsViewModel with ChangeNotifier {
                   screenY: window.screenY + jy,
                   pageX: jx + window.scrollX,
                   pageY: jy + window.scrollY,
-                  button: 0
+                  button: 0,
+                  width: touchWidth,
+                  height: touchHeight,
+                  radiusX: radiusX,
+                  radiusY: radiusY
                 };
                 
                 // 👤 Realistic human pointer approach trajectory
-                const appX = jx + (Math.random() * 4 - 2);
-                const appY = jy + (Math.random() * 4 - 2);
-                try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: appX, clientY: appY, pointerId: 1, pointerType: 'touch', buttons: 0 })); } catch(e){}
+                let appX = jx + (Math.random() * 4 - 2);
+                let appY = jy + (Math.random() * 4 - 2);
+                if (rect && rect.width > 8 && rect.height > 8) {
+                  const pad = Math.min(3.0, Math.min(rect.width, rect.height) * 0.1);
+                  appX = Math.max(rect.left + pad, Math.min(rect.right - pad, appX));
+                  appY = Math.max(rect.top + pad, Math.min(rect.bottom - pad, appY));
+                }
+                try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: appX, clientY: appY, pointerId: 1, pointerType: 'touch', buttons: 0, width: touchWidth, height: touchHeight, radiusX: radiusX, radiusY: radiusY })); } catch(e){}
                 try { el.dispatchEvent(new MouseEvent('mousemove', { ...base, clientX: appX, clientY: appY, buttons: 0 })); } catch(e){}
 
-                const pointerDown = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 1, pressure: 0.5 + Math.random() * 0.3};
-                const pointerUp = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 0, pressure: 0.0};
+                const pointerDown = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 1, pressure: 0.5 + Math.random() * 0.3, width: touchWidth, height: touchHeight, radiusX: radiusX, radiusY: radiusY};
+                const pointerUp = {...base, pointerId: 1, pointerType: 'touch', isPrimary: true, buttons: 0, pressure: 0.0, width: touchWidth, height: touchHeight, radiusX: radiusX, radiusY: radiusY};
                 const mDown = new MouseEvent('mousedown', { ...base, buttons: 1 });
                 const mUp = new MouseEvent('mouseup', { ...base, buttons: 0 });
                 const mClick = new MouseEvent('click', { ...base, buttons: 0 });
@@ -2978,9 +3007,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 // 👤 Human touch dwell time (50ms - 95ms) before releasing
                 setTimeout(() => {
                   // Human micro-jitter during touch contact
-                  const contX = jx + (Math.random() * 1.5 - 0.75);
-                  const contY = jy + (Math.random() * 1.5 - 0.75);
-                  try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: contX, clientY: contY, pointerId: 1, pointerType: 'touch', buttons: 1, pressure: 0.4 })); } catch(e){}
+                  let contX = jx + (Math.random() * 1.5 - 0.75);
+                  let contY = jy + (Math.random() * 1.5 - 0.75);
+                  if (rect && rect.width > 8 && rect.height > 8) {
+                    const pad = Math.min(3.0, Math.min(rect.width, rect.height) * 0.1);
+                    contX = Math.max(rect.left + pad, Math.min(rect.right - pad, contX));
+                    contY = Math.max(rect.top + pad, Math.min(rect.bottom - pad, contY));
+                  }
+                  try { el.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: contX, clientY: contY, pointerId: 1, pointerType: 'touch', buttons: 1, pressure: 0.4, width: touchWidth, height: touchHeight, radiusX: radiusX, radiusY: radiusY })); } catch(e){}
 
                   try { el.dispatchEvent(new PointerEvent('pointerup', pointerUp)); } catch(e){}
                   try { el.dispatchEvent(mUp); } catch(e){}

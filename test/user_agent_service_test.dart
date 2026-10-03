@@ -68,12 +68,23 @@ void main() {
       expect(script.contains('delete window.flutter_inappwebview'), isTrue);
       expect(script.contains('navigator.userAgentData'), isTrue);
       expect(script.contains(UserAgentService.currentModel), isTrue);
+      expect(script.contains("navigator, 'webdriver'"), isTrue);
+      expect(script.contains('get: () => undefined'), isTrue);
+    });
+
+    test('Client Hints JavaScript script masks navigator.webdriver to return undefined', () {
+      final script = UserAgentService.clientHintsScript;
+      expect(script.contains('navigator.webdriver'), isTrue);
+      expect(script.contains('undefined'), isTrue);
+      expect(script.contains("Object.defineProperty(navigator, 'webdriver'"), isTrue);
+      expect(script.contains("Object.defineProperty(window.Navigator.prototype, 'webdriver'"), isTrue);
     });
 
     test('initialUserScripts provides AT_DOCUMENT_START injection', () {
       final scripts = UserAgentService.initialUserScripts;
       expect(scripts.isNotEmpty, isTrue);
       expect(scripts.first.source.contains(UserAgentService.currentModel), isTrue);
+      expect(scripts.first.source.contains('navigator.webdriver'), isTrue);
     });
   });
 }

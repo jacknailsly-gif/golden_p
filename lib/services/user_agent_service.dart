@@ -146,6 +146,22 @@ class UserAgentService {
       }
     }
   } catch(e) {}
+
+  // 🛡️ 3. Mask navigator.webdriver ให้คืนค่า undefined ป้องกันการตรวจจับ Automation / Cloudflare Anti-Bot
+  try {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+      configurable: true
+    });
+  } catch(e) {}
+  try {
+    if (window.Navigator && window.Navigator.prototype) {
+      Object.defineProperty(window.Navigator.prototype, 'webdriver', {
+        get: () => undefined,
+        configurable: true
+      });
+    }
+  } catch(e) {}
 })();
 """;
   }

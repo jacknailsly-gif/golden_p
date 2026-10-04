@@ -465,6 +465,46 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 🔄 Reset session profit and baseline balance explicitly
+  /// Called after 2-3 hour breaks or when starting a fresh session
+  void resetSessionProfit({GameMode? mode, double? newBaseline, String? coinType}) {
+    final targetMode = mode ?? gameMode;
+    final coin = (coinType ?? getCoinTypeForMode(targetMode) ?? (targetMode == GameMode.mines ? 'POL' : 'DOGE')).toUpperCase().trim();
+    final key = '${targetMode.name}_$coin';
+
+    if (newBaseline != null && newBaseline > 0.00000001) {
+      final balStr = newBaseline.toStringAsFixed(8);
+      _initialBalanceByModeAndCoin[key] = balStr;
+      _initialBalances[coin] = balStr;
+      _initialBalanceByMode[targetMode] = balStr;
+      _initialBalance = balStr;
+      _currentBalanceByMode[targetMode] = balStr;
+      _currentBalance = balStr;
+    } else {
+      _initialBalanceByModeAndCoin.remove(key);
+      _initialBalances.remove(coin);
+      _initialBalanceByMode[targetMode] = null;
+    }
+
+    _profitPercentageByModeAndCoin[key] = 0.0;
+    _profitPercentageByMode[targetMode] = 0.0;
+    _profitPercentage = 0.0;
+    notifyListeners();
+    debugPrint('[PROFIT TRACKER] 🔄 resetSessionProfit for [${targetMode.displayName}] coin: $coin baseline: $newBaseline -> Profit reset to 0.000%');
+  }
+
+  /// 🔄 Sync verified balance directly into analyzer and update profit & UI
+  void syncCurrentBalance(GameMode mode, double balance, {String? coinType}) {
+    if (balance <= 0.00000001) return;
+    final coin = (coinType ?? getCoinTypeForMode(mode) ?? (mode == GameMode.mines ? 'POL' : 'DOGE')).toUpperCase().trim();
+    final balStr = balance.toStringAsFixed(8);
+    _applyParsedBalanceResult(
+      mode,
+      {'coin': coin, 'balance': balStr},
+      notify: true,
+    );
+  }
+
   /// V39.0: Brain Clean Engine
   /// Wipes the machine learning memory entirely (used during Stop-Loss Breaks)
   void cleanBrainEngine() {
@@ -753,7 +793,34 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     ''' : r'''
       (function() {
         try {
-          // ─── EXACT ORIGINAL FAUCETPAY PARSER FOR TOWERS (เหมือนเดิม 100%) ───
+          // ─── 1. DIRECT BALANCE ELEMENT SELECTOR FOR TOWERS (FAUCETPAY) ───
+          var directEl = document.querySelector('.balance, [data-balance], #balance, .user-balance, #user_balance, .user_balance');
+          if (directEl) {
+            var txt = (directEl.innerText || directEl.textContent || directEl.value || '').trim();
+            var match = txt.match(/([0-9,]+\.[0-9]{4,8})/);
+            if (match) {
+              var coinMatch = txt.match(/(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
+              var coin = coinMatch ? coinMatch[1].toUpperCase() : 'DOGE';
+              return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
+            }
+          }
+
+          // ─── 2. SCAN SPECIFIC BALANCE CONTAINERS ───
+          var allContainers = Array.from(document.querySelectorAll('span, div, b, strong')).filter(function(e) {
+            var t = (e.innerText || e.textContent || '').trim();
+            return /([0-9,]+\.[0-9]{4,8})\s*(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i.test(t);
+          });
+          for (var i = 0; i < allContainers.length; i++) {
+            var el = allContainers[i];
+            var t = (el.innerText || el.textContent || '').trim();
+            var m = t.match(/([0-9,]+\.[0-9]{4,8})/);
+            var cm = t.match(/(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
+            if (m && cm) {
+              return JSON.stringify({coin: cm[1].toUpperCase(), balance: m[1].replace(/,/g, '')});
+            }
+          }
+
+          // ─── 3. TEXT-BASED PATTERN SCANNER ───
           const text = document.body.innerText || "";
           
           const coins = [
@@ -981,7 +1048,7 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
         try { parsedResult = jsonDecode(result.toString()); } catch (_) {}
 
         if (parsedResult != null) {
-          _applyParsedBalanceResult(gameMode, parsedResult, notify: false);
+          _applyParsedBalanceResult(gameMode, parsedResult, notify: true);
         }
       }
     } catch (_) {}

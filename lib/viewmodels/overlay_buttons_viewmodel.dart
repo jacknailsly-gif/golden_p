@@ -1862,6 +1862,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
     }
 
     final state = getState(mode);
+    if (settledBalance > 0.00000001 && analyzer != null) {
+      final coin = state.activeCoinType ?? analyzer.getCoinTypeForMode(mode);
+      try {
+        analyzer.syncCurrentBalance(mode, settledBalance, coinType: coin);
+      } catch (_) {}
+    }
     if (settledBalance <= 0.00000001) {
       settledBalance = state.lastSettledBalance > 0.00000001
           ? state.lastSettledBalance
@@ -2011,7 +2017,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
         final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
         if (analyzer != null) {
           try {
-            analyzer.resetSessionProfit(mode: mode);
+            final coin = state.activeCoinType ?? analyzer.getCoinTypeForMode(mode);
+            analyzer.resetSessionProfit(
+              mode: mode,
+              newBaseline: curBalance,
+              coinType: coin,
+            );
           } catch (_) {}
         }
 

@@ -513,9 +513,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
       _isStopProfitEnabledByMode[mode ?? _activeGameMode] ?? false;
   double getStopProfitPercent([GameMode? mode]) =>
       _stopProfitPercentByMode[mode ?? _activeGameMode] ?? 10.0;
+  double getAutoStopLossPercent([GameMode? mode]) =>
+      getStopProfitPercent(mode) * 0.8;
 
   bool get isStopProfitEnabled => isStopProfitEnabledFor(_activeGameMode);
   double get stopProfitPercent => getStopProfitPercent(_activeGameMode);
+  double get autoStopLossPercent => getAutoStopLossPercent(_activeGameMode);
   bool get is24HourMode => _is24HourMode;
   int get maxM5Steps => _maxM5Steps;
   String get stopReason => _stopReason;
@@ -1394,20 +1397,29 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
       final isTpEnabled = isStopProfitEnabledFor(mode);
       final targetPercent = getStopProfitPercent(mode);
+      final stopLossLimit = getAutoStopLossPercent(mode);
 
       _slCheckCounter++;
       if (_slCheckCounter % 10 == 0) {
         debugPrint(
-          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${targetPercent.toStringAsFixed(4)}% | Enabled: $isTpEnabled',
+          '[PnL MONITOR] 📊 [${mode.displayName} / ${analyzer.getCoinTypeForMode(mode)}] PnL: ${pnl.toStringAsFixed(4)}% | Target: +${targetPercent.toStringAsFixed(4)}% | StopLoss: -${stopLossLimit.toStringAsFixed(4)}% | Enabled: $isTpEnabled',
         );
       }
 
-      if (isTpEnabled && pnl >= targetPercent && !isBreakActiveFor(mode)) {
-        await _handleStopProfitReached(
-          mode: mode,
-          pnl: pnl,
-          targetPercent: targetPercent,
-        );
+      if (isTpEnabled && !isBreakActiveFor(mode)) {
+        if (pnl > 0.00000001 && pnl >= targetPercent) {
+          await _handleStopProfitReached(
+            mode: mode,
+            pnl: pnl,
+            targetPercent: targetPercent,
+          );
+        } else if (pnl <= -stopLossLimit) {
+          await _handleStopLossReached(
+            mode: mode,
+            pnl: pnl,
+            stopLossPercent: stopLossLimit,
+          );
+        }
       }
     }
   }
@@ -1480,6 +1492,56 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _handleStopLossReached({
+    required GameMode mode,
+    required double pnl,
+    required double stopLossPercent,
+  }) async {
+    final state = getState(mode);
+    final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
+
+    // 1. Calculate randomized 2-3 hours break (120 to 180 minutes)
+    final int breakMinutes = 120 + Random().nextInt(61);
+    final Duration breakDuration = Duration(minutes: breakMinutes);
+    final endTime = DateTime.now().add(breakDuration);
+    _breakEndTimeByMode[mode] = endTime;
+    _isBreakActive = true;
+
+    // 2. Reset profit tracking in analyzer: analyzer.resetProfitTracking(mode: mode, coinType: sessionCoin)
+    String? sessionCoin;
+    if (analyzer != null) {
+      sessionCoin = analyzer.getCoinTypeForMode(mode);
+      analyzer.resetProfitTracking(mode: mode, coinType: sessionCoin);
+    }
+
+    // 3. Reset session baseline balances
+    double curBalance = await _getBalanceDouble(mode: mode);
+    if (curBalance <= 0.00000001) {
+      curBalance = state.lastSettledBalance;
+    }
+    state.sessionStartBalance = curBalance;
+    state.sessionProfitBaseline = curBalance;
+    state.sessionMaxBalance = curBalance;
+    state.protectedPrincipal = curBalance * 0.97;
+
+    // 4. CUT-LOSS: Reset debt completely
+    state.resetDebt();
+    state.consecutiveLossesStreak = 0;
+    state.isCurrentlyRecoveryRound = false;
+    state.recoveryStepInCycle = 0;
+    state.currentRecoveryCycle = 1;
+    state.isLossStreakBaseBetLocked = false;
+    state.observationRoundsRemaining = 0;
+
+    _stopReason =
+        '🛑 AUTO STOP-LOSS triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Limit: -${stopLossPercent.toStringAsFixed(4)}% [80% of TP]). Cut-loss executed (Debt reset to 0). Taking a 2-3 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Baseline reset.';
+    debugPrint('[AUTO STOP-LOSS] 🛑 $_stopReason');
+
+    // 5. Start break countdown updates via _startBreakCountdownTimer() and notifyListeners()
+    _startBreakCountdownTimer();
+    notifyListeners();
+  }
+
   Future<bool> _checkStopProfitInline(int runToken, {GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
@@ -1522,45 +1584,62 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<bool> testCheckStopProfitInline(int runToken, {GameMode? mode}) =>
       _checkStopProfitInline(runToken, mode: mode);
 
-  /// 🛡️ SHIELD 2: HARD STOP-LOSS ENGINE (30% Max Drawdown Protection)
-  /// ป้องกันการล้างพอร์ต 100%: หากยอดเงินร่วงลงเกิน 30% จากจุดสูงสุด (ATH) หรือเงินเริ่มต้น
-  /// ในโหมด 24 ชั่วโมง: เข้าสู่ Safe Haven Protocol พัก 15 นาที ล้างหนี้เป็น 0 รีเซ็ตทุน และเดิน Base Bet ต่อเนื่องอัตโนมัติ
-  /// ในโหมดปกติ: สั่งหยุดทำงานฉุกเฉินทันที ล็อกระบบเบทเพื่อรักษาเงินต้น 70% ไว้อย่างเด็ดขาด
+  /// 🛡️ SHIELD 2: AUTO STOP-LOSS ENGINE (80% of Stop-Profit Ratio & Cut-Loss Protocol)
   Future<bool> _checkStopLossInline(int runToken, {GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
 
-    final double baselineCapital = max(
-      state.sessionMaxBalance,
-      state.sessionStartBalance ?? state.protectedPrincipal ?? 0.0,
-    );
-
-    if (baselineCapital <= 0.00000001) {
+    final isTpEnabled = isStopProfitEnabledFor(targetMode);
+    if (!isTpEnabled || isBreakActiveFor(targetMode)) {
       return false;
     }
 
-    double curBalance = await _getBalanceDouble(mode: targetMode);
-    if (curBalance <= 0.00000001) {
-      curBalance = state.lastSettledBalance > 0.00000001
-          ? state.lastSettledBalance
-          : (state.sessionStartBalance ?? 0.0);
+    final stopLossLimit = getAutoStopLossPercent(targetMode);
+    if (stopLossLimit <= 0.00000001) {
+      return false;
     }
 
-    if (curBalance <= 0.00000001) {
-      _stopReason = '🚨 ZERO BALANCE EMERGENCY HALT: Balance is 0 on ${targetMode.displayName}';
-      debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
-      state.isLossStreakBaseBetLocked = true;
-      state.recoveryCircuitBreakerActive = true;
-      stopSequence(mode: targetMode);
+    double pnl = 0.0;
+    final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
+    if (analyzer != null) {
+      pnl = analyzer.getProfitForMode(targetMode);
+    } else {
+      double curBalance = await _getBalanceDouble(mode: targetMode);
+      if (curBalance <= 0.00000001) {
+        curBalance = state.lastSettledBalance > 0.00000001
+            ? state.lastSettledBalance
+            : (state.sessionStartBalance ?? 0.0);
+      }
+      if (curBalance <= 0.00000001) {
+        _stopReason = '🚨 ZERO BALANCE EMERGENCY HALT: Balance is 0 on ${targetMode.displayName}';
+        debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
+        state.isLossStreakBaseBetLocked = true;
+        state.recoveryCircuitBreakerActive = true;
+        stopSequence(mode: targetMode);
+        return true;
+      }
+      if (state.sessionStartBalance == null || state.sessionStartBalance! <= 0) {
+        state.sessionStartBalance = curBalance;
+        return false;
+      }
+      pnl = ((curBalance - state.sessionStartBalance!) / state.sessionStartBalance!) * 100;
+    }
+
+    if (pnl <= -stopLossLimit) {
+      await _handleStopLossReached(
+        mode: targetMode,
+        pnl: pnl,
+        stopLossPercent: stopLossLimit,
+      );
       return true;
     }
 
-    // 🎯 คำสั่งผู้ใช้: "ปลดล็อกความปลอดภัยของเงินทุน"
-    // ปลดล็อกเพดาน 20% Stop-Loss Floor ไม่ตัดการทำงานฉุกเฉินเมื่อ Drawdown เกิน เพื่อให้รันได้อย่างอิสระต่อเนื่อง
-    // ให้ระบบควบคุมความเสี่ยงด้วยกลไก "แพ้ 3 ตาติด ถอย Base Bet 8-12 ตา" แทน (รักษาเงินทุนจากการล้างพอร์ต)
-
     return false;
   }
+
+  @visibleForTesting
+  Future<bool> testCheckStopLossInline(int runToken, {GameMode? mode}) =>
+      _checkStopLossInline(runToken, mode: mode);
 
   /// 🎯 คำสั่งผู้ใช้: สำหรับ Mine ให้เลื่อนขึ้นให้ปุ่ม Start ในเว็ปตรงกับ Marker M0
   /// (สำหรับ Tower จะไม่มีการเลื่อนขึ้นเด็ดขาด มีเพียงแค่ Refresh เท่านั้น)
@@ -1877,9 +1956,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
       }
       if (await _checkStopLossInline(runToken, mode: mode)) {
         debugPrint(
-          '[SMART FLOW] 🛑 [${mode.displayName}] Hard Stop-Loss reached — NOT starting new round',
+          '[SMART FLOW] 🛑 [${mode.displayName}] Auto Stop-Loss triggered — entering 2-3 hour break',
         );
-        break;
+        continue;
       }
       if (_shouldAbort(runToken, mode: mode)) break;
 

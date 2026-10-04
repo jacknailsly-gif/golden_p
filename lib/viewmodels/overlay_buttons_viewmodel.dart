@@ -68,6 +68,7 @@ class DebtBucket {
 class GameModeSessionState {
   final GameMode mode;
   bool isRunning = false;
+  bool isRoundInProgress = false; // 🛡️ In-flight bet guard: true while bet is placed and in-flight until win/loss/timeout settles
   int runToken = 0;
   double? lockedBaseBet;
   double currentBetAmount = 0.00007880;
@@ -1339,6 +1340,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
   void stopSequence({GameMode? mode}) {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
+    state.isRoundInProgress = false;
     state.runToken++;
     state.isRunning = false;
     _isRunning = isAnyRunning;
@@ -1383,6 +1385,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
     for (var mode in GameMode.values) {
       final state = getState(mode);
       if (!state.isRunning) continue;
+      // 🛡️ IN-FLIGHT BET GUARD: Never evaluate Stop-Loss / Stop-Profit mid-round while bet stake is deducted
+      if (state.isRoundInProgress) continue;
 
       final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
       if (analyzer == null) continue;
@@ -1447,6 +1451,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
       }
     }
   }
+
+  @visibleForTesting
+  Future<void> testMonitorSLTP() => _monitorSLTP();
 
   bool _shouldAbort(int runToken, {GameMode? mode}) {
     final targetMode = mode ?? _activeGameMode;
@@ -1636,6 +1643,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<bool> _checkStopLossInline(int runToken, {GameMode? mode}) async {
     final targetMode = mode ?? _activeGameMode;
     final state = getState(targetMode);
+
+    // 🛡️ IN-FLIGHT BET GUARD: Never evaluate Stop Loss mid-round while bet stake is deducted
+    if (state.isRoundInProgress) {
+      return false;
+    }
 
     final isTpEnabled = isStopProfitEnabledFor(targetMode);
     if (!isTpEnabled || isBreakActiveFor(targetMode)) {
@@ -2347,6 +2359,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
       }
 
       // 1. Click M0 (Start / Place Bet)
+      state.isRoundInProgress = true;
       debugPrint('[SMART FLOW] 🟢 [${mode.displayName}] 1️⃣ Clicking M0 (Start Bet)');
       await _performButtonAction('M0', mode: mode);
       if (_shouldAbort(runToken, mode: mode)) break;
@@ -2487,6 +2500,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
             }
           }
           if (_shouldAbort(runToken, mode: mode)) break;
+
+          // 🛡️ Round outcome settled (WIN)
+          state.isRoundInProgress = false;
 
           double winningBet = await _getBetAmount(mode: mode);
           if (winningBet <= 0.0) winningBet = state.currentBetAmount;
@@ -2985,6 +3001,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
               : (targetMarker == 'M2' ? 'B' : 'C');
           _lossSequence.add(actualClickedChar);
           if (_lossSequence.length > 5) _lossSequence.removeAt(0);
+
+          // 🛡️ Round outcome settled (LOSS)
+          state.isRoundInProgress = false;
+
+          // 🛑 Immediate Post-Loss Auto Stop-Loss Check:
+          if (await _checkStopLossInline(runToken, mode: mode)) {
+            debugPrint('[SMART FLOW] 🛑 Auto Stop-Loss triggered after LOSS — entering 1-2 hour break');
+            continue;
+          }
         } else {
           if (m0Retries == 7) {
             await _performButtonAction(targetMarker, mode: mode);
@@ -2993,6 +3018,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       }
 
       if (!resolutionFound) {
+        // 🛡️ Round outcome settled (TIMEOUT)
+        state.isRoundInProgress = false;
         debugPrint(
           '🚨 [M0 TIMEOUT] [${mode.displayName}] Network slow. Refresh disabled by user directive. Continuing detection...',
         );
@@ -3008,6 +3035,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
           debugPrint(
             '🚨 [TIMEOUT REAL LOSS] 💸 [${mode.displayName}] เน็ตช้าจนจับผลไม่ได้แต่ยอดเงินลดลงจริง: -${timeoutLoss.toStringAsFixed(8)} -> บันทึกเป็นหนี้ทันที! หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)}',
           );
+        }
+        if (await _checkStopLossInline(runToken, mode: mode)) {
+          debugPrint('[SMART FLOW] 🛑 Auto Stop-Loss triggered after TIMEOUT LOSS — entering 1-2 hour break');
+          continue;
         }
         await Future.delayed(const Duration(seconds: 2));
         continue;
@@ -3032,6 +3063,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         }
       }
     }
+    state.isRoundInProgress = false;
     state.isRunning = false;
     _isRunning = isAnyRunning;
     if (!_isDisposed) {
@@ -3045,6 +3077,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     _breakCountdownTimer?.cancel();
     _breakCountdownTimer = null;
     for (var s in _statesByMode.values) {
+      s.isRoundInProgress = false;
       s.runToken++;
       s.isRunning = false;
     }

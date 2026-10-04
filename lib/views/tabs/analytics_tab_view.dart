@@ -80,8 +80,6 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
               const SizedBox(height: 24),
               _buildRecoveryProfitLevelSection(overlayVM),
               const SizedBox(height: 24),
-              _buildTrainingDataSection(overlayVM),
-              const SizedBox(height: 24),
               _buildProfitMilestonesSection(overlayVM),
             ],
           ),
@@ -485,121 +483,6 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 ),
               ],
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTrainingDataSection(OverlayButtonsViewModel overlayVM) {
-    final logger = overlayVM.trainingDataLogger;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: const Color(0xFFA855F7).withValues(alpha: 0.3),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.science_rounded, color: Color(0xFFA855F7), size: 24),
-              SizedBox(width: 8),
-              Text(
-                'AI Training Data Logger',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F1423),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Rows Logged: ${logger.totalRowsLogged}',
-                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Buffer: ${logger.bufferSize} rows (auto-save every 50)',
-                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                    ),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFA855F7).withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    '${logger.totalRowsLogged} rows',
-                    style: const TextStyle(
-                      color: Color(0xFFA855F7),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () async {
-                final path = await logger.exportNow();
-                if (!mounted) return;
-                if (path != null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('✅ Exported to: $path'),
-                      backgroundColor: const Color(0xFF10B981),
-                    ),
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('⚠️ No data to export or storage error.'),
-                      backgroundColor: Color(0xFFF59E0B),
-                    ),
-                  );
-                }
-              },
-              icon: const Icon(Icons.file_download, size: 18),
-              label: const Text('Export Training Data (CSV)'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFA855F7),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'ข้อมูลจะถูกบันทึกลง Download/golden_p_training_data/ เพื่อนำไป Train AI Model',
-            style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
           ),
         ],
       ),

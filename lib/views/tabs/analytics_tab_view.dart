@@ -620,7 +620,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 Icon(Icons.emoji_events_rounded, color: Color(0xFFF59E0B), size: 20),
                 SizedBox(width: 8),
                 Text(
-                  'Profit Milestones History',
+                  'Session Milestones History (TP / SL)',
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 16,
@@ -654,7 +654,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 Icon(Icons.hourglass_empty_rounded, color: Color(0xFF64748B), size: 36),
                 SizedBox(height: 8),
                 Text(
-                  'No Profit Milestones Yet',
+                  'No Session Milestones Yet',
                   style: TextStyle(
                     color: Colors.white70,
                     fontWeight: FontWeight.w600,
@@ -663,7 +663,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  'Sessions reaching Take-Profit target will be recorded here automatically.',
+                  'Sessions reaching Take-Profit target (+TP) or Stop-Loss (-SL) will be recorded here automatically.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Color(0xFF94A3B8),
@@ -680,6 +680,20 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
             final String resumeTimeStr = '${item.resumeTime.hour.toString().padLeft(2, '0')}:${item.resumeTime.minute.toString().padLeft(2, '0')}';
             final String modeName = item.mode.displayName;
             final bool isTowers = item.mode == GameMode.towers;
+            final bool isLoss = item.pnlPercent < 0;
+
+            final Color borderColor = isLoss
+                ? const Color(0xFFEF4444).withValues(alpha: 0.35)
+                : const Color(0xFF10B981).withValues(alpha: 0.25);
+            final Color badgeBg = isLoss
+                ? const Color(0xFFEF4444).withValues(alpha: 0.2)
+                : const Color(0xFF10B981).withValues(alpha: 0.2);
+            final Color badgeTextColor = isLoss
+                ? const Color(0xFFF87171)
+                : const Color(0xFF10B981);
+            final String badgeText = isLoss
+                ? '${item.pnlPercent.toStringAsFixed(2)}% 🛑'
+                : '+${item.pnlPercent.toStringAsFixed(2)}% 🎯';
 
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
@@ -688,7 +702,7 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                 color: const Color(0xFF1E293B),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.25),
+                  color: borderColor,
                 ),
               ),
               child: Column(
@@ -726,13 +740,13 @@ class _AnalyticsTabViewState extends State<AnalyticsTabView> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                          color: badgeBg,
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          '+${item.pnlPercent.toStringAsFixed(2)}% 🎯',
-                          style: const TextStyle(
-                            color: Color(0xFF10B981),
+                          badgeText,
+                          style: TextStyle(
+                            color: badgeTextColor,
                             fontWeight: FontWeight.bold,
                             fontSize: 13,
                           ),

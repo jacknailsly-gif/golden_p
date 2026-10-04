@@ -1413,12 +1413,36 @@ class OverlayButtonsViewModel with ChangeNotifier {
             pnl: pnl,
             targetPercent: targetPercent,
           );
-        } else if (pnl <= -stopLossLimit) {
-          await _handleStopLossReached(
-            mode: mode,
-            pnl: pnl,
-            stopLossPercent: stopLossLimit,
-          );
+        } else {
+          // Stop-Loss check strictly uses sessionStartBalance baseline
+          final balStr = analyzer.getBalanceForMode(mode);
+          final double curBal = balStr != null
+              ? (double.tryParse(balStr.replaceAll(',', '').trim()) ?? 0.0)
+              : 0.0;
+
+          if (state.sessionStartBalance == null || state.sessionStartBalance! <= 0.00000001) {
+            final initStr = analyzer.getInitialBalanceForMode(mode);
+            final double? initVal = initStr != null
+                ? double.tryParse(initStr.replaceAll(',', '').trim())
+                : null;
+            if (initVal != null && initVal > 0.00000001) {
+              state.sessionStartBalance = initVal;
+            } else if (curBal > 0.00000001) {
+              state.sessionStartBalance = curBal;
+            }
+          }
+
+          final double baseline = state.sessionStartBalance ?? 0.0;
+          if (baseline > 0.00000001 && curBal > 0.00000001 && curBal < baseline) {
+            final double slPnl = ((curBal - baseline) / baseline) * 100.0;
+            if (slPnl <= -stopLossLimit) {
+              await _handleStopLossReached(
+                mode: mode,
+                pnl: slPnl,
+                stopLossPercent: stopLossLimit,
+              );
+            }
+          }
         }
       }
     }
@@ -1500,8 +1524,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final state = getState(mode);
     final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
 
-    // 1. Calculate randomized 2-3 hours break (120 to 180 minutes)
-    final int breakMinutes = 120 + Random().nextInt(61);
+    // 1. Calculate randomized 1-2 hours break (60 to 120 minutes)
+    final int breakMinutes = 60 + Random().nextInt(61);
     final Duration breakDuration = Duration(minutes: breakMinutes);
     final endTime = DateTime.now().add(breakDuration);
     _breakEndTimeByMode[mode] = endTime;
@@ -1517,7 +1541,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
     // 3. Reset session baseline balances
     double curBalance = await _getBalanceDouble(mode: mode);
     if (curBalance <= 0.00000001) {
-      curBalance = state.lastSettledBalance;
+      if (analyzer != null) {
+        final balStr = analyzer.getBalanceForMode(mode);
+        if (balStr != null) {
+          curBalance = double.tryParse(balStr.replaceAll(',', '').trim()) ?? 0.0;
+        }
+      }
+      if (curBalance <= 0.00000001) {
+        curBalance = state.lastSettledBalance;
+      }
     }
     state.sessionStartBalance = curBalance;
     state.sessionProfitBaseline = curBalance;
@@ -1533,8 +1565,24 @@ class OverlayButtonsViewModel with ChangeNotifier {
     state.isLossStreakBaseBetLocked = false;
     state.observationRoundsRemaining = 0;
 
+    // 🎯 Record Stop-Loss Milestone Session for Analytics History
+    final milestone = StopProfitMilestoneRecord(
+      timestamp: DateTime.now(),
+      mode: mode,
+      pnlPercent: pnl,
+      targetPercent: -stopLossPercent,
+      endingBalance: curBalance,
+      breakMinutes: breakMinutes,
+      resumeTime: endTime,
+    );
+    _profitMilestones.insert(0, milestone);
+    if (_profitMilestones.length > 30) {
+      _profitMilestones = _profitMilestones.sublist(0, 30);
+    }
+    _saveMilestonesToPrefs();
+
     _stopReason =
-        '🛑 AUTO STOP-LOSS triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Limit: -${stopLossPercent.toStringAsFixed(4)}% [80% of TP]). Cut-loss executed (Debt reset to 0). Taking a 2-3 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Baseline reset.';
+        '🛑 AUTO STOP-LOSS triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Limit: -${stopLossPercent.toStringAsFixed(4)}% [80% of TP]). Cut-loss executed (Debt reset to 0). Taking a 1-2 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Baseline reset.';
     debugPrint('[AUTO STOP-LOSS] 🛑 $_stopReason');
 
     // 5. Start break countdown updates via _startBreakCountdownTimer() and notifyListeners()
@@ -1599,30 +1647,54 @@ class OverlayButtonsViewModel with ChangeNotifier {
       return false;
     }
 
-    double pnl = 0.0;
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
-    if (analyzer != null) {
-      pnl = analyzer.getProfitForMode(targetMode);
-    } else {
-      double curBalance = await _getBalanceDouble(mode: targetMode);
+    double curBalance = await _getBalanceDouble(mode: targetMode);
+    if (curBalance <= 0.00000001) {
+      if (analyzer != null) {
+        final balStr = analyzer.getBalanceForMode(targetMode);
+        if (balStr != null) {
+          curBalance = double.tryParse(balStr.replaceAll(',', '').trim()) ?? 0.0;
+        }
+      }
       if (curBalance <= 0.00000001) {
         curBalance = state.lastSettledBalance > 0.00000001
             ? state.lastSettledBalance
             : (state.sessionStartBalance ?? 0.0);
       }
-      if (curBalance <= 0.00000001) {
-        _stopReason = '🚨 ZERO BALANCE EMERGENCY HALT: Balance is 0 on ${targetMode.displayName}';
-        debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
-        state.isLossStreakBaseBetLocked = true;
-        state.recoveryCircuitBreakerActive = true;
-        stopSequence(mode: targetMode);
-        return true;
+    }
+    if (curBalance <= 0.00000001) {
+      _stopReason = '🚨 ZERO BALANCE EMERGENCY HALT: Balance is 0 on ${targetMode.displayName}';
+      debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
+      state.isLossStreakBaseBetLocked = true;
+      state.recoveryCircuitBreakerActive = true;
+      stopSequence(mode: targetMode);
+      return true;
+    }
+
+    // Ensure baseline is state.sessionStartBalance. If not set, initialize it from curBalance (or analyzer initial balance) and return false.
+    if (state.sessionStartBalance == null || state.sessionStartBalance! <= 0.00000001) {
+      double? initBal;
+      if (analyzer != null) {
+        final initStr = analyzer.getInitialBalanceForMode(targetMode);
+        if (initStr != null) {
+          initBal = double.tryParse(initStr.replaceAll(',', '').trim());
+        }
       }
-      if (state.sessionStartBalance == null || state.sessionStartBalance! <= 0) {
-        state.sessionStartBalance = curBalance;
-        return false;
-      }
-      pnl = ((curBalance - state.sessionStartBalance!) / state.sessionStartBalance!) * 100;
+      state.sessionStartBalance = (initBal != null && initBal > 0.00000001) ? initBal : curBalance;
+      return false;
+    }
+
+    final double baseline = state.sessionStartBalance!;
+
+    // Stop-Loss can NEVER trigger if balance is at or above initial session start balance,
+    // even if it dropped from a higher peak ATH
+    if (curBalance >= baseline) {
+      return false;
+    }
+
+    final double pnl = ((curBalance - baseline) / baseline) * 100.0;
+    if (pnl >= 0.0) {
+      return false;
     }
 
     if (pnl <= -stopLossLimit) {
@@ -3840,7 +3912,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     }
     final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
     if (analyzer != null) {
-      String? balanceStr = analyzer.currentBalance;
+      String? balanceStr = analyzer.getBalanceForMode(targetMode) ?? analyzer.currentBalance;
       if (balanceStr != null) {
         final val = double.tryParse(balanceStr.replaceAll(',', '').trim());
         if (val != null && val > 0) return val;

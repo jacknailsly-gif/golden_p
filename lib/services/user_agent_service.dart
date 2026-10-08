@@ -116,8 +116,13 @@ class UserAgentService {
     return """
 (function() {
   try {
-    // 🛡️ 1. ลบ In-App WebView Bridge ไม่ให้เว็บตรวจพบ
-    delete window.flutter_inappwebview;
+    // 🛡️ 1. ลบ In-App WebView Bridge ไม่ให้เว็บตรวจพบ (SEC-04)
+    if ('flutter_inappwebview' in window) {
+      delete window.flutter_inappwebview;
+    }
+    if ('_flutter_inappwebview' in window) {
+      delete window._flutter_inappwebview;
+    }
   } catch(e) {}
 
   // 🛡️ 2. Spoof navigator.userAgentData ให้ส่งโมเดลเครื่องจริงเสมอ
@@ -147,19 +152,77 @@ class UserAgentService {
     }
   } catch(e) {}
 
-  // 🛡️ 3. Mask navigator.webdriver ให้คืนค่า undefined ป้องกันการตรวจจับ Automation / Cloudflare Anti-Bot
+  // 🛡️ 3. ปรับปรุง navigator.webdriver ให้แนบเนียนสมบูรณ์ (SEC-03)
+  // ใน Android Chrome Mobile แท้ navigator.webdriver มีค่าเป็น false (ไม่ใช่ undefined)
+  // กำหนดอย่างสะอาดโดยไม่แตะต้องหรือ Override Function.prototype.toString (เพื่อความปลอดภัยสูงสุดต่อ Turnstile)
   try {
-    Object.defineProperty(navigator, 'webdriver', {
-      get: () => undefined,
-      configurable: true
-    });
-  } catch(e) {}
-  try {
+    try {
+      if (Object.prototype.hasOwnProperty.call(navigator, 'webdriver')) {
+        delete navigator.webdriver;
+      }
+    } catch(e) {}
+
+    var webdriverGetter = function webdriver() {
+      return false;
+    };
+
+    try {
+      Object.defineProperty(webdriverGetter, 'name', { value: 'get webdriver', configurable: true });
+    } catch(e) {}
+
     if (window.Navigator && window.Navigator.prototype) {
       Object.defineProperty(window.Navigator.prototype, 'webdriver', {
-        get: () => undefined,
+        get: webdriverGetter,
+        enumerable: true,
         configurable: true
       });
+    }
+
+    try {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: webdriverGetter,
+        enumerable: true,
+        configurable: true
+      });
+    } catch(e) {}
+  } catch(e) {}
+
+  // 🛡️ 4. Mobile Touch Points & Sensor Stealth (SEC-09)
+  // กำหนด navigator.maxTouchPoints ให้คืนค่า 5 ตรงตามหน้าจอมือถือ Capacitive Multi-touch Android แท้
+  try {
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      get: () => 5,
+      configurable: true,
+      enumerable: true
+    });
+    if (window.Navigator && window.Navigator.prototype) {
+      Object.defineProperty(window.Navigator.prototype, 'maxTouchPoints', {
+        get: () => 5,
+        configurable: true,
+        enumerable: true
+      });
+    }
+  } catch(e) {}
+
+  // รับประกันความพร้อมของ DeviceOrientationEvent เพื่อยืนยันคุณสมบัติอุปกรณ์มือถือ
+  try {
+    if (typeof window.DeviceOrientationEvent === 'undefined') {
+      window.DeviceOrientationEvent = function DeviceOrientationEvent() {};
+    }
+  } catch(e) {}
+
+  // 🛡️ 5. Emulate window.chrome object for Chrome Mobile realism (Turnstile / FingerprintJS stealth)
+  try {
+    if (typeof window.chrome === 'undefined') {
+      window.chrome = {
+        app: {
+          isInstalled: false,
+          InstallState: { DISABLED: "disabled", INSTALLED: "installed", NOT_INSTALLED: "not_installed" },
+          RunningState: { CANNOT_RUN: "cannot_run", READY_TO_RUN: "ready_to_run", RUNNING: "running" }
+        },
+        csi: function() {},
+        loadTimes: function() {}
+      };
     }
   } catch(e) {}
 })();

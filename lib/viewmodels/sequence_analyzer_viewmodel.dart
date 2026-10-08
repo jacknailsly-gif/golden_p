@@ -755,37 +755,103 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     return (mode == GameMode.mines) ? r'''
       (function() {
         try {
-          // ─── ROBUST 4-8 DECIMAL & HEADER SCANNER FOR MINE (POLPICK) ───
-          var directEl = document.querySelector('#balance, .balance, [data-balance], #user_balance, .user_balance, .user-balance, #user-balance');
+          function normalizeCoin(c) {
+            if (!c) return '';
+            var s = c.toUpperCase().trim();
+            if (s === 'MATIC' || s === 'POLYGON') return 'POL';
+            if (s === 'FEYORRA') return 'FEY';
+            if (s === 'DIGIBYTE') return 'DGB';
+            if (s === 'TETHER') return 'USDT';
+            if (s === 'DOGECOIN') return 'DOGE';
+            return s;
+          }
+
+          var coinRegex = /(PEPE|FEYORRA|FEY|DIGIBYTE|DGB|DOGECOIN|DOGE|POLYGON|POL|MATIC|TETHER|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP|BCH|DASH|ZEC|ADA|TON|XLM|USDC|XMR|TARA)/i;
+
+          function detectSelectedCoin() {
+            var selectSelectors = [
+              'select[name="currency"]', 'select#currency',
+              'select[name="coin"]', 'select#coin',
+              '.currency-selector select', '.coin-selector select',
+              '.currency-select', 'select.currency',
+              'select[data-currency]', 'select[data-coin]'
+            ];
+            for (var i = 0; i < selectSelectors.length; i++) {
+              var sel = document.querySelector(selectSelectors[i]);
+              if (sel) {
+                var opt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+                var strToTest = ((opt ? (opt.text || opt.innerText) : '') + ' ' + (sel.value || (opt ? opt.value : ''))).trim();
+                var m = strToTest.match(coinRegex);
+                if (m) return normalizeCoin(m[1]);
+              }
+            }
+            var activeSelectors = [
+              '.currency-item.active', '.coin-item.active',
+              '[data-coin].active', '[data-currency].active',
+              '.currency-btn.active', '.coin-btn.active',
+              '.coin-tab.active', '.currency-tab.active',
+              '.btn-currency.active', '.btn-coin.active'
+            ];
+            for (var j = 0; j < activeSelectors.length; j++) {
+              var act = document.querySelector(activeSelectors[j]);
+              if (act) {
+                var val = (act.getAttribute('data-coin') || act.getAttribute('data-currency') || act.getAttribute('value') || act.innerText || act.textContent || '').trim();
+                var m2 = val.match(coinRegex);
+                if (m2) return normalizeCoin(m2[1]);
+              }
+            }
+            return null;
+          }
+
+          function extractBalanceNumber(txt) {
+            if (!txt) return null;
+            var m = txt.match(/([0-9,]+\.[0-9]{1,8})/);
+            if (m) return m[1].replace(/,/g, '');
+            var mInt = txt.match(/([0-9,]+)/);
+            if (mInt) return mInt[1].replace(/,/g, '');
+            return null;
+          }
+
+          var selCoin = detectSelectedCoin();
+
+          // ─── ROBUST 2-8 DECIMAL & HEADER SCANNER FOR MINE (POLPICK) ───
+          var directEl = document.querySelector('#balance, .balance, [data-balance], #user_balance, .user_balance, .user-balance, #user-balance, .balance-value, #balance-value');
           if (directEl) {
-            var txt = (directEl.innerText || directEl.textContent || directEl.value || '').trim();
-            var match = txt.match(/([0-9,]+\.[0-9]{4,8})/);
-            if (match) {
-              var coinMatch = txt.match(/(POL|MATIC|DOGE|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
-              var coin = coinMatch ? coinMatch[1].toUpperCase() : 'POL';
-              return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
+            var rawVal = (directEl.getAttribute('data-balance') || directEl.value || directEl.innerText || directEl.textContent || '').trim();
+            var num = extractBalanceNumber(rawVal);
+            if (num) {
+              var cm = rawVal.match(coinRegex);
+              var coin = cm ? normalizeCoin(cm[1]) : null;
+              if (!coin && directEl.parentElement) {
+                var pcm = (directEl.parentElement.innerText || directEl.parentElement.textContent || '').match(coinRegex);
+                if (pcm) coin = normalizeCoin(pcm[1]);
+              }
+              if (!coin && selCoin) coin = selCoin;
+              if (coin) return JSON.stringify({coin: coin, balance: num});
             }
           }
-          let topElements = Array.from(document.querySelectorAll('*')).filter(el => {
+
+          var targetContainers = 'header, nav, .top-bar, .navbar, .user-info, .wallet, .balance-container, #balance, .balance, [data-balance], .user-balance, #user_balance, .user_balance, #user-balance, .balance-value, #balance-value, .user-card, .account-info, .user-balance-wrap';
+          let topElements = Array.from(document.querySelectorAll(targetContainers)).filter(el => {
             let txt = (el.innerText || el.textContent || '').trim();
             if (!txt || txt.length > 60) return false;
-            return /[0-9,]+\.[0-9]{4,8}/.test(txt);
+            return /[0-9,]+\.[0-9]{2,8}/.test(txt);
           });
           topElements.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
           for (let el of topElements) {
             let rect = el.getBoundingClientRect();
             if (rect.height > 0 && rect.top >= 0 && rect.top < 250) {
-              let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{4,8})/);
+              let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{2,8})/);
               if (match) {
-                let coinMatch = (el.innerText || el.textContent || '').match(/(POL|MATIC|DOGE|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
-                let coin = coinMatch ? coinMatch[1].toUpperCase() : 'POL';
+                let coinMatch = (el.innerText || el.textContent || '').match(coinRegex);
+                let coin = coinMatch ? normalizeCoin(coinMatch[1]) : (selCoin || 'POL');
                 return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
               }
             }
           }
           for (let el of topElements) {
-            let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{4,8})/);
-            if (match) return JSON.stringify({coin: 'POL', balance: match[1].replace(/,/g, '')});
+            let match = (el.innerText || el.textContent || '').match(/([0-9,]+\.[0-9]{2,8})/);
+            if (match) return JSON.stringify({coin: selCoin || 'POL', balance: match[1].replace(/,/g, '')});
           }
           return null;
         } catch(e) { return null; }
@@ -793,30 +859,102 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
     ''' : r'''
       (function() {
         try {
+          function normalizeCoin(c) {
+            if (!c) return '';
+            var s = c.toUpperCase().trim();
+            if (s === 'MATIC' || s === 'POLYGON') return 'POL';
+            if (s === 'FEYORRA') return 'FEY';
+            if (s === 'DIGIBYTE') return 'DGB';
+            if (s === 'TETHER') return 'USDT';
+            if (s === 'DOGECOIN') return 'DOGE';
+            return s;
+          }
+
+          var coinRegex = /(PEPE|FEYORRA|FEY|DIGIBYTE|DGB|DOGECOIN|DOGE|POLYGON|POL|MATIC|TETHER|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP|BCH|DASH|ZEC|ADA|TON|XLM|USDC|XMR|TARA)/i;
+
+          function detectSelectedCoin() {
+            var selectSelectors = [
+              'select[name="currency"]', 'select#currency',
+              'select[name="coin"]', 'select#coin',
+              '.currency-selector select', '.coin-selector select',
+              '.currency-select', 'select.currency',
+              'select[data-currency]', 'select[data-coin]'
+            ];
+            for (var i = 0; i < selectSelectors.length; i++) {
+              var sel = document.querySelector(selectSelectors[i]);
+              if (sel) {
+                var opt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+                var strToTest = ((opt ? (opt.text || opt.innerText) : '') + ' ' + (sel.value || (opt ? opt.value : ''))).trim();
+                var m = strToTest.match(coinRegex);
+                if (m) return normalizeCoin(m[1]);
+              }
+            }
+            var activeSelectors = [
+              '.currency-item.active', '.coin-item.active',
+              '[data-coin].active', '[data-currency].active',
+              '.currency-btn.active', '.coin-btn.active',
+              '.coin-tab.active', '.currency-tab.active',
+              '.btn-currency.active', '.btn-coin.active'
+            ];
+            for (var j = 0; j < activeSelectors.length; j++) {
+              var act = document.querySelector(activeSelectors[j]);
+              if (act) {
+                var val = (act.getAttribute('data-coin') || act.getAttribute('data-currency') || act.getAttribute('value') || act.innerText || act.textContent || '').trim();
+                var m2 = val.match(coinRegex);
+                if (m2) return normalizeCoin(m2[1]);
+              }
+            }
+            return null;
+          }
+
+          function extractBalanceNumber(txt) {
+            if (!txt) return null;
+            var m = txt.match(/([0-9,]+\.[0-9]{1,8})/);
+            if (m) return m[1].replace(/,/g, '');
+            var mInt = txt.match(/([0-9,]+)/);
+            if (mInt) return mInt[1].replace(/,/g, '');
+            return null;
+          }
+
+          var selCoin = detectSelectedCoin();
+          var directFallbackNumber = null;
+
           // ─── 1. DIRECT BALANCE ELEMENT SELECTOR FOR TOWERS (FAUCETPAY) ───
-          var directEl = document.querySelector('.balance, [data-balance], #balance, .user-balance, #user_balance, .user_balance');
+          var directEl = document.querySelector('.balance, [data-balance], #balance, .user-balance, #user_balance, .user_balance, .balance-value, #balance-value');
           if (directEl) {
-            var txt = (directEl.innerText || directEl.textContent || directEl.value || '').trim();
-            var match = txt.match(/([0-9,]+\.[0-9]{4,8})/);
-            if (match) {
-              var coinMatch = txt.match(/(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
-              var coin = coinMatch ? coinMatch[1].toUpperCase() : 'DOGE';
-              return JSON.stringify({coin: coin, balance: match[1].replace(/,/g, '')});
+            var rawVal = (directEl.getAttribute('data-balance') || directEl.value || directEl.innerText || directEl.textContent || '').trim();
+            var num = extractBalanceNumber(rawVal);
+            if (num) {
+              var cm = rawVal.match(coinRegex);
+              var coin = cm ? normalizeCoin(cm[1]) : null;
+              if (!coin && directEl.parentElement) {
+                var pcm = (directEl.parentElement.innerText || directEl.parentElement.textContent || '').match(coinRegex);
+                if (pcm) coin = normalizeCoin(pcm[1]);
+              }
+              if (!coin && selCoin) coin = selCoin;
+              if (coin) {
+                return JSON.stringify({coin: coin, balance: num});
+              }
+              directFallbackNumber = num;
             }
           }
 
           // ─── 2. SCAN SPECIFIC BALANCE CONTAINERS ───
-          var allContainers = Array.from(document.querySelectorAll('span, div, b, strong')).filter(function(e) {
+          var allContainers = Array.from(document.querySelectorAll('span, div, b, strong, p, a, td')).filter(function(e) {
             var t = (e.innerText || e.textContent || '').trim();
-            return /([0-9,]+\.[0-9]{4,8})\s*(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i.test(t);
+            if (!t || t.length > 80) return false;
+            return coinRegex.test(t) && /[0-9]/.test(t);
           });
           for (var i = 0; i < allContainers.length; i++) {
             var el = allContainers[i];
             var t = (el.innerText || el.textContent || '').trim();
-            var m = t.match(/([0-9,]+\.[0-9]{4,8})/);
-            var cm = t.match(/(DOGE|POL|MATIC|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP)/i);
-            if (m && cm) {
-              return JSON.stringify({coin: cm[1].toUpperCase(), balance: m[1].replace(/,/g, '')});
+            var m1 = t.match(/([0-9,]+(?:\.[0-9]{1,8})?)\s*(PEPE|FEYORRA|FEY|DIGIBYTE|DGB|DOGECOIN|DOGE|POLYGON|POL|MATIC|TETHER|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP|BCH|DASH|ZEC|ADA|TON|XLM|USDC|XMR|TARA)/i);
+            if (m1) {
+              return JSON.stringify({coin: normalizeCoin(m1[2]), balance: m1[1].replace(/,/g, '')});
+            }
+            var m2 = t.match(/(PEPE|FEYORRA|FEY|DIGIBYTE|DGB|DOGECOIN|DOGE|POLYGON|POL|MATIC|TETHER|USDT|TRX|BTC|LTC|ETH|SOL|BNB|XRP|BCH|DASH|ZEC|ADA|TON|XLM|USDC|XMR|TARA)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]{1,8})?)/i);
+            if (m2) {
+              return JSON.stringify({coin: normalizeCoin(m2[1]), balance: m2[2].replace(/,/g, '')});
             }
           }
 
@@ -824,39 +962,37 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
           const text = document.body.innerText || "";
           
           const coins = [
-            {regex: /Bitcoin\s*\(BTC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BTC'},
-            {regex: /Ethereum\s*\(ETH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ETH'},
-            {regex: /Dogecoin\s*\(DOGE\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DOGE'},
-            {regex: /Litecoin\s*\(LTC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'LTC'},
-            {regex: /Bitcoin Cash\s*\(BCH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BCH'},
-            {regex: /Dash\s*\(DASH\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DASH'},
-            {regex: /Digibyte\s*\(DGB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'DGB'},
-            {regex: /Tron\s*\(TRX\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TRX'},
-            {regex: /Tether\s*\(USDT\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDT'},
-            {regex: /USDT\s*\(USDT\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDT'},
-            {regex: /Feyorra\s*\(FEY\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'FEY'},
-            {regex: /Zcash\s*\(ZEC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ZEC'},
-            {regex: /Binance Coin\s*\(BNB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BNB'},
-            {regex: /BNB\s*\(BNB\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'BNB'},
-            {regex: /Solana\s*\(SOL\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'SOL'},
-            {regex: /Ripple\s*\(XRP\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XRP'},
-            {regex: /XRP\s*\(XRP\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XRP'},
-            {regex: /Polygon\s*\(POL\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'POL'},
-            {regex: /Cardano\s*\(ADA\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'ADA'},
-            {regex: /Ton\s*\(TON\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TON'},
-            {regex: /TON\s*\(TON\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TON'},
-            {regex: /Stellar\s*\(XLM\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XLM'},
-            {regex: /USDC\s*\(USDC\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDC'},
-            {regex: /Monero\s*\(XMR\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'XMR'},
-            {regex: /Taraxa\s*\(TARA\)\s*([0-9,]+\.?[0-9]*)/i, coin: 'TARA'}
+            {regex: /(?:Pepe\s*\(PEPE\)|PEPE)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'PEPE'},
+            {regex: /(?:Feyorra\s*\(FEY\)|FEY)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'FEY'},
+            {regex: /(?:Digibyte\s*\(DGB\)|DGB)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'DGB'},
+            {regex: /(?:Dogecoin\s*\(DOGE\)|DOGE)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'DOGE'},
+            {regex: /(?:Polygon\s*\(POL\)|POL)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'POL'},
+            {regex: /(?:Polygon\s*\(MATIC\)|MATIC)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'POL'},
+            {regex: /(?:Tether\s*\(USDT\)|USDT)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDT'},
+            {regex: /(?:Tron\s*\(TRX\)|TRX)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'TRX'},
+            {regex: /(?:Bitcoin\s*\(BTC\)|BTC)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'BTC'},
+            {regex: /(?:Ethereum\s*\(ETH\)|ETH)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'ETH'},
+            {regex: /(?:Litecoin\s*\(LTC\)|LTC)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'LTC'},
+            {regex: /(?:Solana\s*\(SOL\)|SOL)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'SOL'},
+            {regex: /(?:Binance Coin\s*\(BNB\)|BNB)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'BNB'},
+            {regex: /(?:Ripple\s*\(XRP\)|XRP)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'XRP'},
+            {regex: /(?:Bitcoin Cash\s*\(BCH\)|BCH)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'BCH'},
+            {regex: /(?:Dash\s*\(DASH\)|DASH)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'DASH'},
+            {regex: /(?:Zcash\s*\(ZEC\)|ZEC)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'ZEC'},
+            {regex: /(?:Cardano\s*\(ADA\)|ADA)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'ADA'},
+            {regex: /(?:Ton\s*\(TON\)|TON)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'TON'},
+            {regex: /(?:Stellar\s*\(XLM\)|XLM)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'XLM'},
+            {regex: /(?:USDC\s*\(USDC\)|USDC)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'USDC'},
+            {regex: /(?:Monero\s*\(XMR\)|XMR)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'XMR'},
+            {regex: /(?:Taraxa\s*\(TARA\)|TARA)\s*[:\-]?\s*([0-9,]+\.?[0-9]*)/i, coin: 'TARA'}
           ];
           
           for (const pattern of coins) {
             const match = text.match(pattern.regex);
             if (match && match[1]) {
               const balance = parseFloat(match[1].replace(/,/g, ''));
-              if (!isNaN(balance) && balance > 0 && balance < 100000000) {
-                return JSON.stringify({coin: pattern.coin, balance: match[1]});
+              if (!isNaN(balance) && balance > 0 && balance < 1000000000000) {
+                return JSON.stringify({coin: pattern.coin, balance: match[1].replace(/,/g, '')});
               }
             }
           }
@@ -864,8 +1000,26 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
           const newFormatMatch = text.match(/Balance[\s:]*([0-9,]+\.?[0-9]*)\s*([A-Z]{3,5})/i);
           if (newFormatMatch && newFormatMatch[1] && newFormatMatch[2]) {
             const balance = parseFloat(newFormatMatch[1].replace(/,/g, ''));
-            if (!isNaN(balance) && balance > 0 && balance < 100000000) {
-              return JSON.stringify({coin: newFormatMatch[2].toUpperCase(), balance: newFormatMatch[1]});
+            if (!isNaN(balance) && balance > 0 && balance < 1000000000000) {
+              return JSON.stringify({coin: normalizeCoin(newFormatMatch[2]), balance: newFormatMatch[1].replace(/,/g, '')});
+            }
+          }
+
+          const revFormatMatch = text.match(/Balance[\s:]*([A-Z]{3,5})\s*([0-9,]+\.?[0-9]*)/i);
+          if (revFormatMatch && revFormatMatch[1] && revFormatMatch[2]) {
+            const balance = parseFloat(revFormatMatch[2].replace(/,/g, ''));
+            if (!isNaN(balance) && balance > 0 && balance < 1000000000000) {
+              return JSON.stringify({coin: normalizeCoin(revFormatMatch[1]), balance: revFormatMatch[2].replace(/,/g, '')});
+            }
+          }
+
+          if (selCoin) {
+            const genericMatch = text.match(/Balance[\s:]*([0-9,]+\.?[0-9]*)/i);
+            if (genericMatch && genericMatch[1]) {
+              const balance = parseFloat(genericMatch[1].replace(/,/g, ''));
+              if (!isNaN(balance) && balance > 0 && balance < 1000000000000) {
+                return JSON.stringify({coin: selCoin, balance: genericMatch[1].replace(/,/g, '')});
+              }
             }
           }
           
@@ -875,10 +1029,15 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
             const match = html.match(flexRegex);
             if (match && match[1]) {
               const balance = parseFloat(match[1].replace(/,/g, ''));
-              if (!isNaN(balance) && balance > 0 && balance < 100000000) {
-                return JSON.stringify({coin: pattern.coin, balance: match[1]});
+              if (!isNaN(balance) && balance > 0 && balance < 1000000000000) {
+                return JSON.stringify({coin: pattern.coin, balance: match[1].replace(/,/g, '')});
               }
             }
+          }
+
+          // Fallback if direct element had a number but coin was only in select or defaults to DOGE
+          if (directFallbackNumber) {
+            return JSON.stringify({coin: (selCoin || 'DOGE'), balance: directFallbackNumber});
           }
           
           return null;
@@ -948,6 +1107,9 @@ class SequenceAnalyzerViewModel extends ChangeNotifier {
   void applyParsedBalanceResultForTesting(GameMode mode, Map<String, dynamic> parsedResult) {
     _applyParsedBalanceResult(mode, parsedResult);
   }
+
+  @visibleForTesting
+  String getBalanceJsForTesting(GameMode mode) => _getBalanceJs(mode);
 
   Future<void> _doUpdateBalanceForMode(GameMode mode, InAppWebViewController controller) async {
     if (_isDisposed) return;

@@ -69,15 +69,27 @@ void main() {
       expect(script.contains('navigator.userAgentData'), isTrue);
       expect(script.contains(UserAgentService.currentModel), isTrue);
       expect(script.contains("navigator, 'webdriver'"), isTrue);
-      expect(script.contains('get: () => undefined'), isTrue);
+      expect(script.contains('return false;'), isTrue);
     });
 
-    test('Client Hints JavaScript script masks navigator.webdriver to return undefined', () {
+    test('Client Hints JavaScript script cleanly masks navigator.webdriver to return false without toString tampering', () {
       final script = UserAgentService.clientHintsScript;
       expect(script.contains('navigator.webdriver'), isTrue);
-      expect(script.contains('undefined'), isTrue);
+      expect(script.contains('return false;'), isTrue);
+      expect(script.contains('Function.prototype.toString ='), isFalse);
       expect(script.contains("Object.defineProperty(navigator, 'webdriver'"), isTrue);
       expect(script.contains("Object.defineProperty(window.Navigator.prototype, 'webdriver'"), isTrue);
+    });
+
+    test('Client Hints JavaScript script emulates window.chrome object for mobile realism', () {
+      final script = UserAgentService.clientHintsScript;
+      expect(script.contains("typeof window.chrome === 'undefined'"), isTrue);
+      expect(script.contains('window.chrome = {'), isTrue);
+      expect(script.contains('InstallState'), isTrue);
+      expect(script.contains('RunningState'), isTrue);
+      expect(script.contains('csi: function()'), isTrue);
+      expect(script.contains('loadTimes: function()'), isTrue);
+      expect(script.contains('Function.prototype.toString ='), isFalse);
     });
 
     test('initialUserScripts provides AT_DOCUMENT_START injection', () {

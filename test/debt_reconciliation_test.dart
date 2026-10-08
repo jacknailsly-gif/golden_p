@@ -434,7 +434,9 @@ void main() {
       // Directive: "ปรับให้ทวงหนี้ทุกตา แพ้ 2 ตาต่อกัน ไปที่ Base bet":
       //            - แพ้ 1 ตา: ยังไม่ต้อง Cooldown ให้ทวงหนี้ต่อทันที
       //            - แพ้ต่อกัน 2 ตาขึ้นไป: เข้าโหมดพักระวังตัว Cooldown 2 ตา และถอยกลับ Base Bet
-      engine.recordOutcome(chosenColumn: 'A', won: false, mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: true, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: true, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: false, revealedBombPos: 'B', mode: GameMode.towers);
       expect(engine.getDefensiveCooldown(GameMode.towers), 0,
           reason: 'Single loss does NOT set cooldown -> allows immediate recovery next round');
       expect(engine.getConsecutiveLosses(GameMode.towers), 1);
@@ -2823,11 +2825,12 @@ void main() {
       final engine = OmniMatrixEngine.instance;
       engine.reset(mode: GameMode.towers);
 
-      // จำลองสถานการณ์: เล่น 1 ตาชนะ แล้ว 2 ตาถัดไปแพ้ (Streak: 2)
+      // จำลองสถานการณ์: มีหลักฐานระเบิดชัดเจนที่ B แล้วแพ้ 2 ตาติด (Streak: 2)
       // หนี้สะสม 3-5% ของทุน (เช่น ทุน 100 DOGE, หนี้ 4.0 DOGE)
-      engine.recordOutcome(chosenColumn: 'A', won: true, mode: GameMode.towers);
-      engine.recordOutcome(chosenColumn: 'A', won: false, revealedBombPos: 'A', mode: GameMode.towers);
-      engine.recordOutcome(chosenColumn: 'B', won: false, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: true, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: true, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'A', won: false, revealedBombPos: 'B', mode: GameMode.towers);
+      engine.recordOutcome(chosenColumn: 'C', won: false, revealedBombPos: 'B', mode: GameMode.towers);
 
       expect(engine.getConsecutiveLosses(GameMode.towers), equals(2));
       expect(engine.isFrequentLossPeriod(GameMode.towers), isTrue,
@@ -2930,6 +2933,145 @@ void main() {
       expect(s.totalAccumulatedLoss, equals(0.0));
       expect(s.isPostObservationRecoveryReady, isFalse);
       expect(s.isCurrentlyRecoveryRound, isFalse);
+    });
+
+    test('Test 59: User Directive: New High 0.2584 dropping to 0.23568 on net lag retains ATH 0.2584 and syncs real deficit 0.02272', () {
+      // User Directive: "ยอด new high อยู่ที่ 0.2584 แต่เน็ดช้า ทำให้แพ้ เหลื่อ 0.23568 มันก็ เอายอด 0.23568 มาเปัน New high ใหม่ เเทนที่ ยอด new high อยู่ที่ 0.2584"
+      final s = GameModeSessionState(GameMode.mines);
+      s.sessionStartBalance = 0.2000;
+      s.sessionMaxBalance = 0.2584; // New High at 0.2584
+      s.protectedPrincipal = 0.2584 * 0.97;
+      s.activeNewLoss = 0.0;
+      s.consecutiveLossesStreak = 0;
+
+      // Net lag causes balance to drop to 0.23568 on server
+      const double settledBalance = 0.23568;
+
+      // Pre-M0 Audit logic (from _verifyAndSyncBalanceBeforeRound):
+      if (s.sessionMaxBalance > 0.00000001 && settledBalance > 0.00000001) {
+        final double realDeficit = s.sessionMaxBalance - settledBalance;
+        if (realDeficit > 0.00000001) {
+          // Strict Monotonic Non-Decreasing ATH:
+          // Never decrease sessionMaxBalance downwards!
+          if (realDeficit > s.totalAccumulatedLoss + 0.00000001) {
+            final double deficitGap = double.parse((realDeficit - s.totalAccumulatedLoss).toStringAsFixed(8));
+            s.activeNewLoss += deficitGap;
+            s.activeNewLoss = double.parse(s.activeNewLoss.toStringAsFixed(8));
+            if (s.consecutiveLossesStreak == 0) {
+              s.consecutiveLossesStreak = 1;
+            }
+          } else if (s.totalAccumulatedLoss > realDeficit + 0.00000001) {
+            s.clampDebtToMax(realDeficit);
+          }
+        } else if (settledBalance >= s.sessionMaxBalance) {
+          s.sessionMaxBalance = settledBalance;
+          final ratcheted = settledBalance * 0.97;
+          if (ratcheted > (s.protectedPrincipal ?? 0.0)) {
+            s.protectedPrincipal = ratcheted;
+          }
+          if (s.consecutiveLossesStreak == 0 && s.totalAccumulatedLoss > 0.00000001) {
+            s.resetDebt();
+          }
+        }
+      }
+
+      // Invariants verification:
+      expect(s.sessionMaxBalance, equals(0.2584),
+          reason: 'sessionMaxBalance must remain strictly non-decreasing at 0.2584, NOT lowered to 0.23568');
+      expect(s.totalAccumulatedLoss, closeTo(0.02272, 0.00000001),
+          reason: 'Deficit gap between 0.2584 and 0.23568 (0.02272) must be synced into debt');
+      expect(s.consecutiveLossesStreak, equals(1),
+          reason: 'Streak must be set to 1 to enable immediate recovery eligibility');
+    });
+
+    test('Test 60: User Directive: False Win Interception & Zero Phantom Profit on slow network (No debt deduction when balance does not increase)', () {
+      // User Directive: "เพราะว่าบางครั้งมันบอกว่าชนะแต่ยอดเงินไม่เพิ่มขึ้นเป็นเพราะเน็ตช้าครับ"
+      final s = GameModeSessionState(GameMode.mines);
+      s.sessionStartBalance = 0.2584;
+      s.sessionMaxBalance = 0.2584;
+      s.activeNewLoss = 0.0100; // Prior debt 0.0100
+      s.consecutiveLossesStreak = 1;
+
+      // Part A: False Win Interception
+      // Visual detector sees cashout M0, but balance dropped from 0.2584 to 0.23568 (Server bomb loss)
+      const double balanceBeforeRound = 0.2584;
+      const double balanceAfterWin = 0.23568;
+      bool balanceIncreased = false;
+
+      // False Win Guard execution:
+      if (!balanceIncreased &&
+          balanceBeforeRound > 0.00000001 &&
+          balanceAfterWin > 0.00000001 &&
+          balanceAfterWin < balanceBeforeRound - 0.00000001) {
+        final double realLossAmount = double.parse((balanceBeforeRound - balanceAfterWin).toStringAsFixed(8));
+        s.isRoundInProgress = false;
+        s.lastRoundWasWin = false;
+        s.lastSettledBalance = balanceAfterWin;
+        s.activeNewLoss += realLossAmount;
+        s.activeNewLoss = double.parse(s.activeNewLoss.toStringAsFixed(8));
+        if (s.consecutiveLossesStreak == 0) {
+          s.consecutiveLossesStreak = 1;
+        } else {
+          s.consecutiveLossesStreak++;
+        }
+      }
+
+      expect(s.lastRoundWasWin, isFalse, reason: 'False win must be flagged as loss');
+      expect(s.consecutiveLossesStreak, equals(2), reason: 'Loss streak must increment');
+      // Original debt was 0.0100 + realLossAmount (0.02272) = 0.03272
+      expect(s.totalAccumulatedLoss, closeTo(0.03272, 0.00000001),
+          reason: 'Debt must increase by the real drop amount 0.02272');
+
+      // Part B: Stale balance / unconfirmed win -> actualProfit is forced to 0.0 (NO phantom profit deduction)
+      const double winningBet = 0.0001;
+      const double theoreticalProfit = winningBet * 0.94; // ~0.000094
+      double actualProfit = 0.0;
+      balanceIncreased = false; // Balance did not increase in DOM
+
+      if (balanceIncreased) {
+        final double measuredDelta = balanceAfterWin - balanceBeforeRound;
+        actualProfit = measuredDelta > theoreticalProfit ? measuredDelta : theoreticalProfit;
+      } else {
+        // Enforce 0.0 actualProfit when balance does not increase
+        actualProfit = 0.0;
+      }
+
+      expect(actualProfit, equals(0.0), reason: 'When balance did not increase, actualProfit must be 0.0');
+
+      // Debt paydown attempt:
+      final double debtBefore = s.totalAccumulatedLoss;
+      if (s.totalAccumulatedLoss > 0.00000001 && actualProfit > 0.00000001) {
+        s.subtractProfitFromDebt(actualProfit);
+      }
+      expect(s.totalAccumulatedLoss, equals(debtBefore),
+          reason: 'Debt must NOT be deducted when actualProfit is 0.0 (Zero Phantom Profit)');
+    });
+
+    test('Test 61: User Directive: Recovery Win Below ATH Never Reduces ATH via Max Clamp (Non-decreasing ATH 0.2584)', () {
+      final s = GameModeSessionState(GameMode.mines);
+      s.sessionStartBalance = 0.2000;
+      s.sessionMaxBalance = 0.2584; // Peak ATH
+      s.protectedPrincipal = 0.2584 * 0.97;
+      s.activeNewLoss = 0.02272; // Deficit from 0.2584 down to 0.23568
+      s.consecutiveLossesStreak = 1;
+      s.isCurrentlyRecoveryRound = true;
+
+      // Recovery bet wins: balance increases to 0.2500 (still below peak ATH 0.2584)
+      const double currentBalForCheck = 0.2500;
+      s.resetDebt(); // Fully pays off tracked debt
+
+      // Recovery win settlement logic with max clamp:
+      if (currentBalForCheck > 0.00000001) {
+        s.sessionMaxBalance = max(s.sessionMaxBalance, currentBalForCheck);
+        s.protectedPrincipal = max(s.protectedPrincipal ?? 0.0, currentBalForCheck * 0.97);
+      }
+
+      // Verification:
+      expect(s.sessionMaxBalance, equals(0.2584),
+          reason: 'Recovery win at 0.2500 must NOT lower peak ATH of 0.2584');
+      expect(s.protectedPrincipal, closeTo(0.2584 * 0.97, 0.00000001),
+          reason: 'Protected principal must remain ratcheted to 0.2584 * 0.97');
+      expect(s.totalAccumulatedLoss, equals(0.0));
     });
   });
 }

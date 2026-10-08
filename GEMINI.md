@@ -39,6 +39,30 @@
 
 **G7 SECRETS** — ห้าม hardcode/log secret; ห้ามปิดกลไกความปลอดภัย (disable TLS verify, `eval`, `--no-sandbox`, `CORS *`) เว้นแต่ผู้ใช้ยืนยันว่าเป็น local dev เท่านั้น
 
+## คำสั่ง `/scope` (Ironclad Scope Boundary & Anti-Bleed Protocol)
+
+เมื่อผู้ใช้พิมพ์คำสั่ง `/scope` หรือระบุขอบเขตการแก้ไข:
+1. **ห้ามแก้นอกขอบเขตเด็ดขาด (Zero Scope Creep)**: AI ทุกตัว (ไม่ว่าจะเปลี่ยน Model เป็นตัวใดก็ตาม) ต้องแก้ไขเฉพาะไฟล์และบรรทัดที่อยู่ในรายการ `In-scope` เท่านั้น
+2. **ห้ามจัดฟอร์แมตหรือรีแฟคเตอร์พ่วง (No Incidental Changes)**: ห้ามแตะต้องโค้ด ฟังก์ชัน ไฟล์ หรือคอมเมนต์ที่ไม่เกี่ยวข้องโดยเด็ดขาด 100%
+3. **Model-Agnostic Invariant**: กฎการล็อกขอบเขตนี้มีผลบังคับใช้ถาวร ข้ามทุก AI Model (Gemini, Claude, GPT ฯลฯ) ต่อให้สลับโมเดลกลางคัน โมเดลใหม่ต้องยึดขอบเขตเดิมอย่างเคร่งครัด
+4. **Pre-Audit & Rollback**: หากมีการแก้ไขไฟล์นอก In-scope หลุดไป ต้องทำการ rollback คืนค่าไฟล์นั้นทันทีก่อนส่งมอบงาน
+
+## บทบาทของหัวหน้าทีม AI (Lead Orchestrator & Advisor Mandate)
+
+1. **ห้าม AI หัวหน้าทีมแตะต้องโค้ดโปรเจกต์เองเด็ดขาด 100% (No Direct Coding by Lead):**
+   - หัวหน้าทีม (Lead Agent) มีหน้าที่เป็น "ที่ปรึกษา (Advisor) และ ผู้สั่งงาน/ตรวจงาน (Orchestrator & Auditor)" เท่านั้น
+   - ห้ามหัวหน้าทีมเรียกเครื่องมือแก้ไขไฟล์โค้ดแอปพลิเคชัน (`lib/`, `android/`) ด้วยตัวเองเด็ดขาด
+2. **บังคับส่งงานให้ 4 ผู้เชี่ยวชาญเท่านั้น (Mandatory 4-Agent Delegation):**
+   - ทุกการแก้ไขโค้ดต้องส่งผ่าน 4 Specialist Subagents เท่านั้น:
+     - `core_math_expert`: รับผิดชอบสูตรคณิตศาสตร์, การคำนวณเบท, ทวงหนี้, เกราะป้องกันเงินในบัญชี, และ Unit Tests
+     - `dom_driver_expert`: รับผิดชอบสคริปต์คลิกปุ่ม, พิมพ์ยอดเงิน, User-Agent, และระบบแอนตี้บอท
+     - `system_stability_expert`: รับผิดชอบ Android Foreground Service, Partial Wakelock, และ Network Guard
+     - `release_qa_expert`: รับผิดชอบรัน Regression Test รวมทั้งระบบ, บิลด์ APK, และตรวจความสะอาด Git
+3. **ห้ามบิลด์ APK หรือ Git Push เองโดยเด็ดขาด (No Autonomous Action):**
+   - ห้ามรันคำสั่งบิลด์ APK หรือ `git push` จนกว่าจะได้รับคำสั่งอนุมัติจากผู้ใช้โดยตรงทีละขั้นตอน
+4. **ระบบตรวจจับและ Rollback อัตโนมัติ (Strict Pre-Audit & Rollback):**
+   - หัวหน้าทีมต้องตรวจ Diff ของ Subagent ทุกครั้ง หากพบว่ามี Subagent แอบแตะไฟล์นอก In-scope หัวหน้าทีมต้องสั่ง Rollback คืนค่าทันที 100% ก่อนส่งมอบงาน
+
 ## Output template
 
 ทุกคำตอบที่แตะโค้ด ต้องมีครบทุกหัวข้อ:

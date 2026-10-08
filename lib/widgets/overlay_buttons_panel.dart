@@ -264,6 +264,16 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
             tooltip: viewModel.is24HourMode ? '24/7 Mode: ON (Non-stop)' : '24/7 Mode: OFF',
           ),
 
+        // OLED Black Screen Saver
+        _buildSmallControl(
+          icon: Icons.dark_mode_rounded,
+          color: viewModel.isBlackScreenSaverActive
+              ? Colors.amberAccent
+              : Colors.white60,
+          onTap: () => viewModel.toggleBlackScreenSaver(),
+          tooltip: 'โหมดจอดำ OLED (ประหยัดพลังงาน)',
+        ),
+
         // Visibility
         _buildSmallControl(
           icon: viewModel.showMarkers
@@ -289,42 +299,6 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
             viewModel.setSpeedMultiplier(nextSpeed);
           },
           tooltip: 'Speed',
-        ),
-
-        // Recover Profit Level (Default Level 8: 48% on Mine, Level 7: 42% on Towers)
-        GestureDetector(
-          onTap: () => viewModel.cycleRecoveryProfitLevel(mode: widget.gameMode),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            margin: const EdgeInsets.symmetric(horizontal: 3),
-            decoration: BoxDecoration(
-              color: Colors.indigoAccent.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Colors.indigoAccent.withValues(alpha: 0.6),
-                width: 1.2,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.trending_up_rounded,
-                  color: Colors.indigoAccent,
-                  size: 16,
-                ),
-                const SizedBox(width: 3),
-                Text(
-                  'L${viewModel.getRecoveryProfitLevel(widget.gameMode)} (${(viewModel.getRecoveryProfitPercent(widget.gameMode) * 100).round()}%)',
-                  style: const TextStyle(
-                    color: Colors.indigoAccent,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
       ],
     );
@@ -369,7 +343,7 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
     required VoidCallback onTap,
     String? tooltip,
   }) {
-    return GestureDetector(
+    final control = GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(8),
@@ -378,6 +352,10 @@ class _OverlayButtonsPanelState extends State<OverlayButtonsPanel> {
         child: Icon(icon, color: color, size: 22),
       ),
     );
+    if (tooltip != null) {
+      return Tooltip(message: tooltip, child: control);
+    }
+    return control;
   }
 
   // ===== Marker Button Widget =====

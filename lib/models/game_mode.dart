@@ -43,7 +43,7 @@ extension GameModeExtension on GameMode {
   }
 
   /// Calculates dynamic base bet based on the active balance
-  /// - Towers: Balance / 10,000 (Min: 0.00007882 DOGE, 0.00000903 POL, 0.000005 USDT)
+  /// - Towers: Balance / 10,000 (Min: 0.00007882 DOGE, 0.00000903 POL, 0.000005 USDT, 0.00171871 FEY, 0.3859 PEPE, 0.000743 DGB)
   /// - Mine (Polpick): Balance / 10,000 (Min: 0.00001, 0.000005 USDT)
   double calculateBaseBet(double balance, double? floorLimit, {String? coin}) {
     final String c = (coin ?? 'DOGE').toUpperCase().trim();
@@ -51,25 +51,25 @@ extension GameModeExtension on GameMode {
         ? 0.000005
         : (this == GameMode.mines
             ? 0.00001
-            : ((c == 'POL' || c == 'POLYGON' || c == 'MATIC') ? 0.00000903 : 0.00007882));
+            : ((c == 'POL' || c == 'POLYGON' || c == 'MATIC')
+                ? 0.00000903
+                : (c == 'FEY' || c == 'FEYORRA')
+                    ? 0.00171871
+                    : (c == 'PEPE')
+                        ? 0.3859
+                        : (c == 'DGB' || c == 'DIGIBYTE')
+                            ? 0.000743
+                            : 0.00007882));
+
+    final double minFloor = floorLimit != null && floorLimit > 0
+        ? max(floorLimit, defaultFloor)
+        : defaultFloor;
 
     if (balance <= 0) {
-      return defaultFloor;
+      return minFloor;
     }
 
-    switch (this) {
-      case GameMode.towers:
-        final double minFloor = floorLimit != null && floorLimit > 0
-            ? max(floorLimit, defaultFloor)
-            : defaultFloor;
-        final double calculated = balance / 10000.0;
-        return max(calculated, minFloor);
-      case GameMode.mines:
-        final double minMinesFloor = floorLimit != null && floorLimit > 0
-            ? max(floorLimit, defaultFloor)
-            : defaultFloor;
-        final double calculated = balance / 10000.0;
-        return max(calculated, minMinesFloor);
-    }
+    final double calculated = balance / 10000.0;
+    return max(calculated, minFloor);
   }
 }

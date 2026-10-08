@@ -52,6 +52,8 @@ class OmniPredictionResult {
   final String marketRegime;
   final bool isGoldenHighway;
   final bool isCasinoTargeting;
+  final String? eliminatedBombColumn;
+  final bool isSniperSignal;
 
   const OmniPredictionResult({
     required this.column,
@@ -69,6 +71,8 @@ class OmniPredictionResult {
     this.marketRegime = 'STABLE_EDGE',
     this.isGoldenHighway = false,
     this.isCasinoTargeting = false,
+    this.eliminatedBombColumn,
+    this.isSniperSignal = false,
   });
 }
 
@@ -85,6 +89,10 @@ class OmniMatrixEngine {
   final Random _rng = Random.secure();
 
   final Map<GameMode, List<String>> _bombHistoryByMode = {
+    GameMode.towers: [],
+    GameMode.mines: [],
+  };
+  final Map<GameMode, List<int>> _bombRoundIndicesByMode = {
     GameMode.towers: [],
     GameMode.mines: [],
   };
@@ -144,6 +152,7 @@ class OmniMatrixEngine {
   String? getActiveAnchor(GameMode mode) => _activeAnchorColumnByMode[mode];
   int getConsecutiveLossesOnAnchor(GameMode mode) => _consecutiveLossesOnAnchorByMode[mode] ?? 0;
   String? getLastFailedAnchor(GameMode mode) => _lastFailedAnchorByMode[mode];
+  String? getLastLossPick(GameMode mode) => _lastLossPickByMode[mode];
 
   // 🧠 PAIN MEMORY & ADAPTIVE SUBMODEL WEIGHTS (Real-Time Online Learning)
   final Map<GameMode, Map<String, double>> _submodelWeightsByMode = {
@@ -277,6 +286,7 @@ class OmniMatrixEngine {
   void resetAllMemory({GameMode? mode}) {
     if (mode != null) {
       _bombHistoryByMode[mode]?.clear();
+      _bombRoundIndicesByMode[mode]?.clear();
       _pickHistoryByMode[mode]?.clear();
       _outcomeHistoryByMode[mode]?.clear();
       _consecutiveLossesByMode[mode] = 0;
@@ -295,6 +305,9 @@ class OmniMatrixEngine {
       _lastPostMortemReasonByMode[mode] = null;
     } else {
       for (var l in _bombHistoryByMode.values) {
+        l.clear();
+      }
+      for (var l in _bombRoundIndicesByMode.values) {
         l.clear();
       }
       for (var l in _pickHistoryByMode.values) {
@@ -340,11 +353,16 @@ class OmniMatrixEngine {
     outcomes.add(won);
     while (outcomes.length > 35) outcomes.removeAt(0);
 
+    final currentRound = _totalRoundsByMode[mode] ?? 0;
     final bomb = revealedBombPos ?? (won ? null : chosenColumn);
     if (bomb != null && columns.contains(bomb)) {
       final bombs = _bombHistoryByMode.putIfAbsent(mode, () => []);
       bombs.add(bomb);
       while (bombs.length > 35) bombs.removeAt(0);
+
+      final bombRounds = _bombRoundIndicesByMode.putIfAbsent(mode, () => []);
+      bombRounds.add(currentRound);
+      while (bombRounds.length > 35) bombRounds.removeAt(0);
     }
 
     if (won) {
@@ -355,9 +373,20 @@ class OmniMatrixEngine {
       _lastLossPickByMode[mode] = null;
       _lastFailedAnchorByMode[mode] = null;
 
-      // 🎯 User Directive: ทายแบบ 1 ตัว ยึดช่องเดิมตอนชนะ
-      _activeAnchorColumnByMode[mode] ??= chosenColumn;
-      debugPrint('[SINGLE ANCHOR WIN 🌟] [${mode.displayName}] ชนะต่อเนื่อง ${_consecutiveWinsByMode[mode]} ตา | ยึดช่อง ${_activeAnchorColumnByMode[mode]} ต่อเนื่อง');
+      final currentWins = _consecutiveWinsByMode[mode] ?? 1;
+      if (currentWins >= 3) {
+        // 🔄 Anchor Rotation Guard: ชนะติดต่อกัน 3 ตาแล้ว ปลดล็อก Anchor เดิมออก เพื่อหมุนเวียนในตาถัดไป
+        _activeAnchorColumnByMode[mode] = null;
+        debugPrint(
+          '[ANCHOR ROTATION GUARD 🔄] [${mode.displayName}] ชนะต่อเนื่อง $currentWins ตาบนช่อง $chosenColumn -> ปลดล็อก Anchor เพื่อหมุนเวียนช่องป้องกันการดักทาง',
+        );
+      } else {
+        // 🎯 User Directive: ทายแบบ 1 ตัว ยึดช่องเดิมตอนชนะ
+        _activeAnchorColumnByMode[mode] ??= chosenColumn;
+        debugPrint(
+          '[SINGLE ANCHOR WIN 🌟] [${mode.displayName}] ชนะต่อเนื่อง $currentWins ตา | ยึดช่อง ${_activeAnchorColumnByMode[mode]} ต่อเนื่อง',
+        );
+      }
 
       // 🧠 Win Memory: When chosenColumn wins, if revealedBombPos was discovered visually,
       // it was already recorded at line 344. If not discovered, do NOT inject synthetic guesses
@@ -636,6 +665,7 @@ class OmniMatrixEngine {
     final picks = _pickHistoryByMode[mode] ?? [];
     final outcomes = _outcomeHistoryByMode[mode] ?? [];
     final bombs = _bombHistoryByMode[mode] ?? [];
+    final bombRounds = _bombRoundIndicesByMode[mode] ?? [];
 
     // ─── 1. BAYESIAN BOMB RISK & PATTERN DETECTOR ───
     final Map<String, double> bombRisk = {'A': 1.0 / 3.0, 'B': 1.0 / 3.0, 'C': 1.0 / 3.0};
@@ -645,13 +675,19 @@ class OmniMatrixEngine {
     String? pingPongB0;
     String? pingPongB1;
 
+    final bool hasRounds = bombRounds.length == bombs.length;
+
     if (bombs.length >= 3) {
       final b0 = bombs[bombs.length - 3];
       final b1 = bombs[bombs.length - 2];
       final b2 = bombs[bombs.length - 1];
+      final int r0 = hasRounds ? bombRounds[bombRounds.length - 3] : 0;
+      final int r1 = hasRounds ? bombRounds[bombRounds.length - 2] : 0;
+      final int r2 = hasRounds ? bombRounds[bombRounds.length - 1] : 0;
+      final bool isRecent3 = !hasRounds || ((r2 - r0) <= 4);
 
-      // Ping-Pong: A -> B -> A
-      if (b0 == b2 && b0 != b1) {
+      // Ping-Pong: A -> B -> A (เฉพาะเมื่อเกิดติดกันจริงในระยะไม่เกิน 4 ตา)
+      if (b0 == b2 && b0 != b1 && isRecent3) {
         pingPongB0 = b0;
         pingPongB1 = b1;
         bombRisk[b1] = (bombRisk[b1] ?? 0.33) + 2.5;
@@ -663,15 +699,15 @@ class OmniMatrixEngine {
         antiClusterScores[b0] = 1.8;
       }
       // Cyclic: 3 distinct columns
-      else if (b0 != b1 && b1 != b2 && b0 != b2) {
+      else if (b0 != b1 && b1 != b2 && b0 != b2 && isRecent3) {
         bombRisk[b0] = (bombRisk[b0] ?? 0.33) + 2.0;
         bombRisk[b2] = (bombRisk[b2] ?? 0.33) * 0.2;
         antiClusterScores[b0] = 0.10;
         antiClusterScores[b2] = 2.5;
         antiClusterScores[b1] = 2.0;
       }
-      // Sticky: A -> A
-      else if (b1 == b2) {
+      // Sticky: A -> A (เฉพาะเมื่อเกิดในตาติดกันจริง r2 - r1 <= 1)
+      else if (b1 == b2 && (!hasRounds || (r2 - r1) <= 1)) {
         stickyBombCol = b2;
         bombRisk[b2] = (bombRisk[b2] ?? 0.33) + 2.0;
         antiClusterScores[b2] = 0.10;
@@ -682,7 +718,9 @@ class OmniMatrixEngine {
     } else if (bombs.length >= 2) {
       final b1 = bombs[bombs.length - 2];
       final b2 = bombs[bombs.length - 1];
-      if (b1 == b2) {
+      final int r1 = hasRounds ? bombRounds[bombRounds.length - 2] : 0;
+      final int r2 = hasRounds ? bombRounds[bombRounds.length - 1] : 0;
+      if (b1 == b2 && (!hasRounds || (r2 - r1) <= 1)) {
         stickyBombCol = b2;
         bombRisk[b2] = (bombRisk[b2] ?? 0.33) + 2.0;
         antiClusterScores[b2] = 0.10;
@@ -696,18 +734,24 @@ class OmniMatrixEngine {
     final Map<String, double> markovScores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
     if (bombs.length >= 2) {
       final lastBomb = bombs.last;
-      final Map<String, double> bombTransitions = {'A': 0.1, 'B': 0.1, 'C': 0.1};
-      for (int i = 0; i < bombs.length - 1; i++) {
-        if (bombs[i] == lastBomb) {
-          final nextB = bombs[i + 1];
-          bombTransitions[nextB] = (bombTransitions[nextB] ?? 0.1) + 1.0;
+      final int lastBombRound = hasRounds ? bombRounds.last : 0;
+      final int currentRound = _totalRoundsByMode[mode] ?? 0;
+      // ประเมิน Markov เฉพาะเมื่อระเบิดล่าสุดเกิดในรอบที่ผ่านมาไม่เกิน 2 ตา (ป้องกันการจับคู่ระเบิดเก่าเมื่อหลายสิบตาก่อน)
+      if (!hasRounds || (currentRound - lastBombRound <= 2)) {
+        final Map<String, double> bombTransitions = {'A': 0.1, 'B': 0.1, 'C': 0.1};
+        for (int i = 0; i < bombs.length - 1; i++) {
+          final bool isConsecutive = !hasRounds || (bombRounds[i + 1] - bombRounds[i] <= 2);
+          if (isConsecutive && bombs[i] == lastBomb) {
+            final nextB = bombs[i + 1];
+            bombTransitions[nextB] = (bombTransitions[nextB] ?? 0.1) + 1.0;
+          }
         }
-      }
-      final double totalTrans = bombTransitions.values.fold(0.0, (a, b) => a + b);
-      for (final c in columns) {
-        final double pBombTrans = (bombTransitions[c] ?? 0.1) / totalTrans;
-        bombRisk[c] = (bombRisk[c] ?? 0.33) + pBombTrans * 1.5;
-        markovScores[c] = (1.0 - pBombTrans) * 1.5;
+        final double totalTrans = bombTransitions.values.fold(0.0, (a, b) => a + b);
+        for (final c in columns) {
+          final double pBombTrans = (bombTransitions[c] ?? 0.1) / totalTrans;
+          bombRisk[c] = (bombRisk[c] ?? 0.33) + pBombTrans * 1.5;
+          markovScores[c] = (1.0 - pBombTrans) * 1.5;
+        }
       }
     }
 
@@ -716,19 +760,24 @@ class OmniMatrixEngine {
     if (bombs.length >= 3) {
       final b1 = bombs[bombs.length - 2];
       final b2 = bombs[bombs.length - 1];
-      final Map<String, double> ngramCounts = {'A': 0.05, 'B': 0.05, 'C': 0.05};
-      for (int i = 0; i < bombs.length - 2; i++) {
-        if (bombs[i] == b1 && bombs[i + 1] == b2) {
-          final nextB = bombs[i + 2];
-          ngramCounts[nextB] = (ngramCounts[nextB] ?? 0.05) + 1.0;
+      final int r1 = hasRounds ? bombRounds[bombRounds.length - 2] : 0;
+      final int r2 = hasRounds ? bombRounds[bombRounds.length - 1] : 0;
+      if (!hasRounds || (r2 - r1 <= 2)) {
+        final Map<String, double> ngramCounts = {'A': 0.05, 'B': 0.05, 'C': 0.05};
+        for (int i = 0; i < bombs.length - 2; i++) {
+          final bool isConsecutive = !hasRounds || (bombRounds[i + 1] - bombRounds[i] <= 2 && bombRounds[i + 2] - bombRounds[i + 1] <= 2);
+          if (isConsecutive && bombs[i] == b1 && bombs[i + 1] == b2) {
+            final nextB = bombs[i + 2];
+            ngramCounts[nextB] = (ngramCounts[nextB] ?? 0.05) + 1.0;
+          }
         }
-      }
-      final double totalNg = ngramCounts.values.fold(0.0, (a, b) => a + b);
-      if (totalNg > 0.3) {
-        for (final c in columns) {
-          final double pNgBomb = (ngramCounts[c] ?? 0.05) / totalNg;
-          bombRisk[c] = (bombRisk[c] ?? 0.33) + pNgBomb * 2.0;
-          ngramScores[c] = (1.0 - pNgBomb) * 1.8;
+        final double totalNg = ngramCounts.values.fold(0.0, (a, b) => a + b);
+        if (totalNg > 0.3) {
+          for (final c in columns) {
+            final double pNgBomb = (ngramCounts[c] ?? 0.05) / totalNg;
+            bombRisk[c] = (bombRisk[c] ?? 0.33) + pNgBomb * 2.0;
+            ngramScores[c] = (1.0 - pNgBomb) * 1.8;
+          }
         }
       }
     }
@@ -751,6 +800,33 @@ class OmniMatrixEngine {
     for (final c in columns) {
       normBombProb[c] = (bombRisk[c] ?? 0.33) / (totalBombRisk > 0 ? totalBombRisk : 1.0);
     }
+
+    // ─── 4.5. 🎯 BOMB ELIMINATION VOTING ───
+    // คำนวณหาเสาที่มีความเสี่ยงระเบิดสูงสุด P(Bomb=c) จาก Markov, N-Gram, Pattern Detector และ Recency
+    String? eliminatedBombCol;
+    double highestBombProb = -1.0;
+    double lowestBombProb = double.infinity;
+    for (final c in columns) {
+      final p = normBombProb[c] ?? (1.0 / 3.0);
+      if (p > highestBombProb) {
+        highestBombProb = p;
+      }
+      if (p < lowestBombProb) {
+        lowestBombProb = p;
+      }
+    }
+    // มีเสาที่ถูกโหวตกำจัดเมื่อมีหลักฐานความเสี่ยงชัดเจน (> 33.3% และต่างจากค่าต่ำสุดอย่างมีนัยสำคัญ)
+    if (highestBombProb > (1.0 / 3.0) + 0.02 && (highestBombProb - lowestBombProb) > 0.02) {
+      for (final c in columns) {
+        if ((normBombProb[c] ?? 0.0) == highestBombProb) {
+          eliminatedBombCol = c;
+          break;
+        }
+      }
+    }
+    final safeCandidates = eliminatedBombCol != null
+        ? columns.where((c) => c != eliminatedBombCol).toList()
+        : List<String>.from(columns);
 
     // Base scores from Bayesian safe probability: S(c) = (1.0 - P(Bomb=c))
     final Map<String, double> scores = {'A': 1.0, 'B': 1.0, 'C': 1.0};
@@ -813,22 +889,25 @@ class OmniMatrixEngine {
       final p1 = picks[picks.length - 2];
       final p2 = picks[picks.length - 1];
       if (p1 != p2) {
-        final untouched = columns.where((c) => c != p1 && c != p2).toList();
-        if (untouched.isNotEmpty) {
-          final safeCol = untouched.first;
-          final bool isSafeColBombTarget = (normBombProb[safeCol] ?? 0.33) >= 0.35;
-          if (!isSafeColBombTarget) {
-            scores[safeCol] = (scores[safeCol] ?? 1.0) * 3.5;
-            scores[p1] = 0.15;
-            scores[p2] = 0.15;
-            debugPrint('[DIVERSITY ESCAPE 🚀] [${mode.displayName}] Streak 2 -> บูสต์ช่องปลอดภัย $safeCol x3.5!');
-          } else {
-            // safeCol เป็นเป้าหมายระเบิด สลับไปเลือก p2 ที่เพิ่งระเบิดไป
-            scores[p2] = (scores[p2] ?? 1.0) * 3.5;
-            scores[safeCol] = 0.10;
-            scores[p1] = 0.15;
-            debugPrint('[DIVERSITY ESCAPE 🛡️ ANTI-CYCLIC] [${mode.displayName}] ตรวจพบว่า $safeCol เสี่ยงระเบิด -> สลับไปเลือก $p2 x3.5!');
-          }
+        final untouched = columns.where((c) => c != p1 && c != p2).first;
+        if (eliminatedBombCol != null && untouched == eliminatedBombCol) {
+          // 🛡️ ANTI-CYCLIC SHIFT & ANTI-CHURN GUARD:
+          // คาสิโนกำลังวนลูป Cyclic Shift นำระเบิดมาดักที่ untouched ($untouched)!
+          // ห้ามเลือก untouched เด็ดขาด! บูสต์คะแนนไปที่ p1 (เสาที่โดนระเบิดไปเมื่อ 2 ตาก่อน ซึ่งหมุนพ้นวงจรระเบิดแล้ว)
+          scores[p1] = (scores[p1] ?? 1.0) * 4.0;
+          scores[untouched] = 0.05;
+          scores[p2] = 0.15;
+          debugPrint(
+            '[ANTI-CYCLIC ESCAPE 🛡️] [${mode.displayName}] Streak 2 ($p1, $p2) -> ตรวจพบ Cyclic Bomb ที่ untouched ($untouched == $eliminatedBombCol)! สลับเป้าไปที่ p1 ($p1) x4.0 ป้องกันโดนดัก!',
+          );
+        } else {
+          // untouched ไม่ใช่เสาระเบิด -> ดำเนินการตามระบบ Diversity Escape ปกติ
+          scores[untouched] = (scores[untouched] ?? 1.0) * 3.5;
+          scores[p1] = 0.15;
+          scores[p2] = 0.15;
+          debugPrint(
+            '[DIVERSITY ESCAPE 🚀] [${mode.displayName}] Streak 2 ($p1, $p2) -> บูสต์ช่องปลอดภัยที่ 3 ($untouched) x3.5! (ห้ามเลือก $p1 หรือ $p2 เด็ดขาด)',
+          );
         }
       } else {
         scores[p1] = 0.10;
@@ -923,55 +1002,127 @@ class OmniMatrixEngine {
       }
     }
 
-    if (goldenHighwayCol != null) {
-      // 💎 Golden Highway คือช่องทางด่วนเพชร 100% ที่ปลอดภัยที่สุด
+    // 🛡️ STRICT ANTI-REPEAT-LOSS GUARD (Streak >= 1):
+    // เมื่อ streak >= 1 และ lastLoss != null: ห้ามเลือกทำนายช่อง lastLoss เด็ดขาด
+    // ถ้า topCol == lastLoss ให้สลับไปเลือกช่องที่มีคะแนนสูงสุดใน 2 ช่องที่เหลือทันที
+    if (streak >= 1 && lastLoss != null && topCol == lastLoss) {
+      final safeCandidates = columns.where((c) => c != lastLoss).toList();
+      String altCol = safeCandidates.first;
+      double altScore = -1.0;
+      for (final c in safeCandidates) {
+        final s = scores[c] ?? 0.0;
+        if (s > altScore) {
+          altScore = s;
+          altCol = c;
+        }
+      }
+      debugPrint(
+        '[STRICT ANTI-REPEAT-LOSS 🛡️] [${mode.displayName}] topCol เป็น lastLoss ($lastLoss)! สลับไปช่องคะแนนสูงสุดที่เหลือ: $altCol (คะแนน ${altScore.toStringAsFixed(2)})',
+      );
+      topCol = altCol;
+      topScore = altScore;
+    }
+
+    if (goldenHighwayCol != null && streak == 0) {
+      // 💎 Golden Highway คือช่องทางด่วนเพชร 100% ที่ปลอดภัยที่สุด (ใช้เฉพาะ streak == 0)
       bestColumn = goldenHighwayCol;
       debugPrint(
         '[GOLDEN HIGHWAY 💎] [${mode.displayName}] ทางด่วนเพชรล็อกเป้าช่อง $bestColumn (คะแนนความปลอดภัย: ${(scores[bestColumn] ?? 0.0).toStringAsFixed(2)})',
       );
     } else if (streak >= 1) {
       // 🛡️ SOVEREIGN LOSS-STREAK LOCKDOWN (คำสั่งผู้ใช้: อัปเกรดเพื่อป้องกันการแพ้ > 3 ตาติด):
-      // เมื่ออยู่ในช่วงแพ้ (Streak 1, 2, 3) ห้ามให้ aiBrainPrediction หรือโมเดลภายนอกที่อาจสุ่มมา Override เด็ดขาด!
-      // ต้องยึดช่องปลอดภัยสูงสุด topCol จากโมเดลสถิติ OmniMatrix 100% เต็มจำนวน ป้องกันการแพ้ซ้ำ
+      // เมื่ออยู่ในช่วงแพ้ (Streak >= 1) ห้ามให้ aiBrainPrediction หรือโมเดลภายนอกที่อาจสุ่มมา Override เด็ดขาด!
+      // ต้องยึดช่องปลอดภัยสูงสุด topCol จาก OmniMatrix 100% เต็มจำนวน ป้องกันการแพ้ซ้ำ
       bestColumn = topCol;
       debugPrint(
         '[SOVEREIGN STREAK LOCKDOWN 🛡️] [${mode.displayName}] Streak: $streak -> ล็อกเป้าช่องปลอดภัยสูงสุด $bestColumn (คะแนน ${topScore.toStringAsFixed(2)}) จาก OmniMatrix 100% ป้องกันการแพ้ซ้ำ!',
       );
     } else if (aiBrainPrediction != null && columns.contains(aiBrainPrediction)) {
-      // 🛡️ Sovereign Brain Safety Guardrail:
-      // หาก AI Brain เผลอทำนายช่องที่เพิ่งแพ้, ช่องระเบิดแช่, ช่องระเบิดสลับ, หรือคะแนนความปลอดภัยต่ำกว่าช่อง Top
-      // ให้ทำการ Veto ทันที แล้วยึดช่องปลอดภัยสูงสุดของ OmniMatrix 100%
-      bool shouldVeto = false;
-      String vetoReason = '';
-      if (lastLoss != null && aiBrainPrediction == lastLoss && streak > 0) {
-        shouldVeto = true;
-        vetoReason = 'AI ทำนาย $aiBrainPrediction ซึ่งเพิ่งแพ้ไป (Streak: $streak)';
-      } else if (stickyBombCol != null && aiBrainPrediction == stickyBombCol) {
-        shouldVeto = true;
-        vetoReason = 'AI ทำนาย $aiBrainPrediction ซึ่งเป็นช่องระเบิดแช่ ($stickyBombCol)';
-      } else if (pingPongB0 != null && pingPongB1 != null && (aiBrainPrediction == pingPongB0 || aiBrainPrediction == pingPongB1)) {
-        shouldVeto = true;
-        vetoReason = 'AI ทำนาย $aiBrainPrediction ซึ่งอยู่ในวงจรระเบิดสลับ ($pingPongB0-$pingPongB1)';
-      } else if ((scores[aiBrainPrediction] ?? 0.0) < topScore * 0.70) {
-        shouldVeto = true;
-        vetoReason = 'AI ทำนาย $aiBrainPrediction (คะแนน ${(scores[aiBrainPrediction] ?? 0.0).toStringAsFixed(2)}) ต่ำกว่าช่องปลอดภัยสูงสุด $topCol (คะแนน ${topScore.toStringAsFixed(2)})';
-      }
-
-      if (shouldVeto) {
+      // 🛡️ Stale AI Brain Prediction Veto:
+      // ปรับให้ OmniMatrix คำนวณความปลอดภัยจากสถิติและคะแนนจริงเป็นหลัก
+      // หาก aiBrainPrediction ขัดแย้งหรือไม่ใช่ช่องปลอดภัยสูงสุด ให้ใช้ช่องสถิติปลอดภัยสูงสุดจาก OmniMatrix เสมอ
+      if (aiBrainPrediction != topCol) {
         bestColumn = topCol;
         debugPrint(
-          '[SOVEREIGN BRAIN VETO 🛡️] [${mode.displayName}] $vetoReason -> Veto อัตโนมัติ สลับไปเลือกช่องปลอดภัยสูงสุด: $bestColumn (คะแนน: ${topScore.toStringAsFixed(2)})',
+          '[SOVEREIGN BRAIN VETO 🛡️] [${mode.displayName}] aiBrainPrediction ($aiBrainPrediction) ขัดแย้งกับสถิติ OmniMatrix ($topCol) -> ยึดช่องปลอดภัยสูงสุด: $bestColumn (คะแนน: ${topScore.toStringAsFixed(2)})',
         );
       } else {
-        bestColumn = aiBrainPrediction;
+        bestColumn = topCol;
         debugPrint(
-          '[AI BRAIN PREDICTION 🧠] [${mode.displayName}] สอดคล้องกับสมองกล AI: ช่อง $bestColumn (คะแนน: ${(scores[bestColumn] ?? 0.0).toStringAsFixed(2)})',
+          '[AI BRAIN PREDICTION 🧠] [${mode.displayName}] สอดคล้องกับสมองกล OmniMatrix: ช่อง $bestColumn (คะแนน: ${topScore.toStringAsFixed(2)})',
         );
       }
     } else {
       bestColumn = topCol;
       debugPrint(
         '[SOVEREIGN OMNI BRAIN 🧠] [${mode.displayName}] คำนวณจากสมองกล Multi-Model AI -> ช่อง $bestColumn (คะแนนความปลอดภัยสูงสุด: ${topScore.toStringAsFixed(2)}) จากคะแนน $scores',
+      );
+    }
+
+    // 🛡️ FINAL INVARIANTS:
+    // 1. Streak >= 1: ห้ามเลือก lastLoss เด็ดขาด 100%
+    if (streak >= 1 && lastLoss != null && bestColumn == lastLoss) {
+      final safeCandidates = columns.where((c) => c != lastLoss).toList();
+      bestColumn = safeCandidates.reduce((a, b) => (scores[a] ?? 0.0) >= (scores[b] ?? 0.0) ? a : b);
+      debugPrint(
+        '[STRICT ANTI-REPEAT-LOSS 🛡️ FINAL LOCK] [${mode.displayName}] bestColumn คือ lastLoss ($lastLoss)! สลับไป $bestColumn 100%',
+      );
+    }
+
+    // 2. Streak == 2: Anti-Cyclic Shift & Diversity Escape Final Lock
+    if (streak == 2 && picks.length >= 2) {
+      final p1 = picks[picks.length - 2];
+      final p2 = picks[picks.length - 1];
+      if (p1 != p2) {
+        final untouched = columns.where((c) => c != p1 && c != p2).first;
+        if (eliminatedBombCol != null && untouched == eliminatedBombCol) {
+          bestColumn = p1;
+          debugPrint(
+            '[ANTI-CYCLIC ESCAPE 🛡️ FINAL LOCK] [${mode.displayName}] Streak 2 ($p1, $p2) -> ตรวจพบ Cyclic Bomb ที่ $untouched! ล็อกเป้าไปที่ p1 ($bestColumn) 100%!',
+          );
+        } else {
+          bestColumn = untouched;
+          debugPrint(
+            '[DIVERSITY ESCAPE 🚀 FINAL LOCK] [${mode.displayName}] Streak 2 ($p1, $p2) -> ล็อกเป้าช่องปลอดภัยที่ 3 ($bestColumn) 100%!',
+          );
+        }
+      }
+    }
+
+    // 🔄 Anchor Rotation Guard:
+    // เมื่อชนะในช่อง Anchor เดิมติดต่อกัน 3 ตาขึ้นไป (_consecutiveWinsByMode[mode] >= 3)
+    // ให้ทำการหมุนเวียน (Rotate) ไปยังช่องปลอดภัยถัดไป เพื่อไม่ให้แทงช่องเดิมซ้ำนานเกินไปจนโดนระเบิด 33.3% ดักทาง
+    final int consecutiveWins = _consecutiveWinsByMode[mode] ?? 0;
+    if (streak == 0 && consecutiveWins >= 3 && goldenHighwayCol == null) {
+      final winningCol = picks.isNotEmpty ? picks.last : _lastPredictionByMode[mode];
+      if (winningCol != null && bestColumn == winningCol) {
+        final rotateCandidates = columns.where((c) => c != winningCol && c != eliminatedBombCol).toList();
+        final candidatesToUse = rotateCandidates.isNotEmpty
+            ? rotateCandidates
+            : columns.where((c) => c != winningCol).toList();
+        final rotatedCol = candidatesToUse.reduce(
+          (a, b) => (scores[a] ?? 0.0) >= (scores[b] ?? 0.0) ? a : b,
+        );
+        debugPrint(
+          '[ANCHOR ROTATION GUARD 🔄] [${mode.displayName}] ชนะติดต่อกัน $consecutiveWins ตาบนช่อง $winningCol -> หมุนเวียน (Rotate) ไปช่องปลอดภัยถัดไป: $rotatedCol (คะแนน ${(scores[rotatedCol] ?? 0.0).toStringAsFixed(2)}) ป้องกันการโดนดักทาง',
+        );
+        bestColumn = rotatedCol;
+        _consecutiveWinsByMode[mode] = 0; // รีเซ็ตตัวนับ win streak บน anchor ใหม่
+      }
+    }
+
+    // 3. 🛡️ BOMB ELIMINATION VETO (Final Lock Invariant):
+    // ตรวจสอบว่า bestColumn ต้องไม่ใช่ eliminatedBombCol เด็ดขาด!
+    // หาก bestColumn == eliminatedBombCol ให้สลับไปเลือกเสาที่ปลอดภัยที่สุดจาก safeCandidates
+    if (eliminatedBombCol != null && bestColumn == eliminatedBombCol) {
+      final safeCandidates = columns.where((c) => c != eliminatedBombCol).toList();
+      final nonLossSafe = streak >= 1 && lastLoss != null
+          ? safeCandidates.where((c) => c != lastLoss).toList()
+          : safeCandidates;
+      final candidatesToUse = nonLossSafe.isNotEmpty ? nonLossSafe : safeCandidates;
+      bestColumn = candidatesToUse.reduce((a, b) => (scores[a] ?? 0.0) >= (scores[b] ?? 0.0) ? a : b);
+      debugPrint(
+        '[BOMB ELIMINATION VETO 🛡️ FINAL LOCK] [${mode.displayName}] bestColumn ชน eliminatedBombCol ($eliminatedBombCol)! สลับไปเสาปลอดภัยสูงสุด: $bestColumn 100%',
       );
     }
 
@@ -1108,9 +1259,14 @@ class OmniMatrixEngine {
     String grade = marketRegime;
 
     final bool isGoldenHighwayActive = goldenHighwayCol != null || stickyBombCol != null || (calibratedConf >= 78.0 && agreementCount >= 4);
-    // 🛡️ กฎเหล็กคำสั่งผู้ใช้ (ปรับจาก 5 ตา มาเป็น 3 ตา):
-    // 1. "ชนะแล้วจะไม่ทวงหนี้เด็ดขาด" / "ไม่มีหนี้" / "แพ้ครบ 3 ตา (streak >= 3)" / "อยู่ในช่วงพัก Cooldown" -> สั่ง holdFire ถอยกลับ Base Bet
-    // 2. "ให้ทวงทุกตาที่แพ้ (Streak 1, 2)" -> ทวงเต็ม 100% เสมอ (Clearance: full100) ไม่บล็อกด้วย isFrequentLoss เพื่อให้ทวงหนี้ได้เต็มจำนวนในไม้เดียวตามคำสั่ง!
+
+    final bool hasPositiveEdge = mathematicalEdge > 0.0;
+    final bool hasBombEliminated = eliminatedBombCol != null;
+    final bool isHighConfidenceOrConsensus = calibratedConf >= 74.0 || isGoldenHighwayActive || agreementCount >= 2;
+    final bool isTrapFree = !(goldenHighwayCol != null && tempRawEdge >= 0.30 && tempRawEdge < 0.50);
+
+    final bool isSniperSignal = hasPositiveEdge && hasBombEliminated && isHighConfidenceOrConsensus && isTrapFree;
+
     if (currentDebt <= 0.00000001 || !isRecoveryRound || isThreeLossesStreak || defCooldown > 0) {
       clearance = RecoveryClearance.holdFire;
       grade = isThreeLossesStreak || defCooldown > 0 ? 'DEFENSE' : marketRegime;
@@ -1120,9 +1276,21 @@ class OmniMatrixEngine {
         );
       }
     } else {
-      // 🎯 รอบทวงหนี้ (Streak 1, 2 หรือ Post-Observation): ทวงเต็ม 100% ตามคำสั่งผู้ใช้เสมอ ไม่บล็อกด้วย HoldFire
-      grade = goldenHighwayCol != null ? 'GOLDEN' : (stickyBombCol != null ? 'STICKY_SAFE' : (isGoldenHighwayActive ? 'AAA' : 'FULL100'));
-      clearance = RecoveryClearance.full100;
+      // 🎯 Sniper Recovery (ระบบทวงหนี้แบบมือปืน)
+      if (isSniperSignal) {
+        clearance = RecoveryClearance.full100;
+        grade = isGoldenHighwayActive ? 'SNIPER_GOLDEN' : 'SNIPER_ONE_SHOT';
+        debugPrint(
+          '[SNIPER RECOVERY 🎯] [${mode.displayName}] จังหวะเปิด 100%! EliminatedBomb: $eliminatedBombCol | Conf: ${calibratedConf.toStringAsFixed(1)}% | Edge: ${(mathematicalEdge * 100).toStringAsFixed(2)}% -> ลั่นไกทวงหนี้เต็มจำนวนไม้เดียวจบ full100!',
+        );
+      } else {
+        // จังหวะยังไม่ชัวร์ / มีกลิ่นกับดัก / Edge ยังไม่เป็นบวก -> Hold Fire เดิน Base Bet ต่ำสุดดูดซับจังหวะ ถนอมพอร์ต 100%
+        clearance = RecoveryClearance.holdFire;
+        grade = 'SNIPER_ABSORB';
+        debugPrint(
+          '[SNIPER ABSORB 🛡️] [${mode.displayName}] จังหวะไม่ชัวร์ (BombEliminated: $hasBombEliminated, Edge: ${(mathematicalEdge * 100).toStringAsFixed(2)}%, Conf: ${calibratedConf.toStringAsFixed(1)}%) -> ห้ามออกเงินก้อนเด็ดขาด! Hold Fire เดิน Base Bet สอดแนม',
+        );
+      }
     }
 
     debugPrint(
@@ -1153,6 +1321,8 @@ class OmniMatrixEngine {
       'recommendedFluidFraction': recommendedFluidFraction,
       'marketRegime': marketRegime,
       'isGoldenHighway': isGoldenHighwayActive,
+      'eliminatedBomb': eliminatedBombCol,
+      'isSniperSignal': isSniperSignal,
     };
   }
 
@@ -1186,6 +1356,8 @@ class OmniMatrixEngine {
     final fluidFraction = (decision['recommendedFluidFraction'] as num?)?.toDouble() ?? 0.0;
     final marketRegime = (decision['marketRegime'] as String?) ?? 'EQUILIBRIUM';
     final isGoldenHighway = (decision['isGoldenHighway'] as bool?) ?? false;
+    final eliminatedBomb = decision['eliminatedBomb'] as String?;
+    final isSniperSignal = (decision['isSniperSignal'] as bool?) ?? false;
 
     final lastPick = _lastPredictionByMode[mode];
     if (pick == lastPick) {
@@ -1210,6 +1382,8 @@ class OmniMatrixEngine {
       recommendedFluidFraction: fluidFraction,
       marketRegime: marketRegime,
       isGoldenHighway: isGoldenHighway,
+      eliminatedBombColumn: eliminatedBomb,
+      isSniperSignal: isSniperSignal,
       probabilityDistribution: {
         'A': pick == 'A' ? conf / 100 : otherScore,
         'B': pick == 'B' ? conf / 100 : otherScore,
@@ -1221,6 +1395,7 @@ class OmniMatrixEngine {
   void reset({GameMode? mode}) {
     if (mode != null) {
       _bombHistoryByMode[mode]?.clear();
+      _bombRoundIndicesByMode[mode]?.clear();
       _pickHistoryByMode[mode]?.clear();
       _outcomeHistoryByMode[mode]?.clear();
       _consecutiveLossesByMode[mode] = 0;
@@ -1231,6 +1406,7 @@ class OmniMatrixEngine {
     } else {
       for (var m in GameMode.values) {
         _bombHistoryByMode[m]?.clear();
+        _bombRoundIndicesByMode[m]?.clear();
         _pickHistoryByMode[m]?.clear();
         _outcomeHistoryByMode[m]?.clear();
         _consecutiveLossesByMode[m] = 0;

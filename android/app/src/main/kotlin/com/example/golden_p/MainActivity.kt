@@ -151,7 +151,22 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun getSystemProperty(key: String): String {
+        return try {
+            val clazz = Class.forName("android.os.SystemProperties")
+            val getMethod = clazz.getMethod("get", String::class.java)
+            (getMethod.invoke(null, key) as? String) ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     private fun checkIsEmulator(): Boolean {
+        // 1. CPU ABI detection (x86 / x86_64 architecture used in LDPlayer and PC emulators)
+        if (Build.SUPPORTED_ABIS.any { it.contains("x86", ignoreCase = true) }) return true
+        @Suppress("DEPRECATION")
+        if (Build.CPU_ABI.contains("x86", ignoreCase = true) || Build.CPU_ABI2.contains("x86", ignoreCase = true)) return true
+
         val fingerprint = Build.FINGERPRINT.lowercase()
         val model = Build.MODEL.lowercase()
         val manufacturer = Build.MANUFACTURER.lowercase()
@@ -160,6 +175,9 @@ class MainActivity : FlutterActivity() {
         val product = Build.PRODUCT.lowercase()
         val hardware = Build.HARDWARE.lowercase()
         val board = Build.BOARD.lowercase()
+
+        // 2. Hardware / Board / Product / Device x86 markers
+        if (hardware.contains("x86") || board.contains("x86") || product.contains("x86") || device.contains("x86")) return true
 
         val isBasicEmu = (brand.startsWith("generic") && device.startsWith("generic"))
                 || fingerprint.startsWith("generic")
@@ -192,7 +210,20 @@ class MainActivity : FlutterActivity() {
 
         if (isBasicEmu) return true
 
-        // File-based emulator detection (qemu, nox, bluestacks, ldplayer pipes)
+        // 3. SystemProperties check for LDPlayer (ro.ld.version, ro.build.version.incremental, ro.product.model.device / ro.product.device)
+        val roLdVersion = getSystemProperty("ro.ld.version").lowercase()
+        if (roLdVersion.isNotEmpty()) return true
+
+        val roIncremental = getSystemProperty("ro.build.version.incremental").lowercase()
+        if (roIncremental.contains("ld")) return true
+
+        val roModelDevice = getSystemProperty("ro.product.model.device").lowercase()
+        if (roModelDevice.contains("xuanzhi") || roModelDevice.contains("ld")) return true
+
+        val roProductDevice = getSystemProperty("ro.product.device").lowercase()
+        if (roProductDevice.contains("xuanzhi")) return true
+
+        // 4. File-based emulator detection (qemu, nox, bluestacks, ldplayer pipes & drivers)
         val emuFiles = listOf(
             "/dev/socket/qemud",
             "/dev/qemu_pipe",
@@ -201,7 +232,21 @@ class MainActivity : FlutterActivity() {
             "/system/bin/microvirtd",
             "/system/lib/libc_orig.so",
             "/system/bin/ttVM-prop",
-            "/data/data/com.vphone.launcher"
+            "/data/data/com.vphone.launcher",
+            "/system/bin/ldprop",
+            "/system/bin/ldinit",
+            "/system/bin/ldmount",
+            "/system/etc/ld.prop",
+            "/dev/ld_pipe",
+            "/dev/socket/ld_pipe",
+            "/dev/vboxguest",
+            "/dev/vboxuser",
+            "/sys/module/vboxguest",
+            "/system/lib/hw/audio.r_submix.ld.so",
+            "/system/lib/hw/gralloc.ld.so",
+            "/system/app/ldAppStore",
+            "/data/data/com.android.ld.appstore",
+            "/system/bin/microvirt-prop"
         )
         for (path in emuFiles) {
             try {

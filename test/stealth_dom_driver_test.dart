@@ -7,10 +7,10 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('Stealth Anti-Detection & DOM Touch Driver Verification Suite', () {
-    test('navigator.webdriver is overridden to return undefined in clientHintsScript', () {
+    test('navigator.webdriver is overridden to return false in clientHintsScript', () {
       final script = UserAgentService.clientHintsScript;
       expect(script.contains("Object.defineProperty(navigator, 'webdriver'"), isTrue);
-      expect(script.contains('get: () => undefined'), isTrue);
+      expect(script.contains('return false;'), isTrue);
       expect(script.contains("Object.defineProperty(window.Navigator.prototype, 'webdriver'"), isTrue);
       expect(script.contains('delete window.flutter_inappwebview'), isTrue);
     });

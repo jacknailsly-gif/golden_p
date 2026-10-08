@@ -693,21 +693,9 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                 controller.evaluateJavascript(
                   source:
                       """
-                  var scale = $zoom / 100;
-                  var meta = document.querySelector('meta[name="viewport"]');
-                  if (!meta) {
-                    meta = document.createElement('meta');
-                    meta.name = 'viewport';
-                    document.head.appendChild(meta);
-                  }
-                  meta.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, shrink-to-fit=no');
-                  // Optional: Disable scrolling to lock layout
+                  // Optional: Disable overscroll bounce
                   document.body.style.overscrollBehavior = 'none';
                   document.documentElement.style.overscrollBehavior = 'none';
-                  
-                  // Clean up old CSS zoom if any from previous versions
-                  var oldStyle = document.getElementById('golden-zoom-style');
-                  if (oldStyle) oldStyle.remove();
 
                   // 🛡️ Purge WebView Bridge signature if injected by plugin
                   try {
@@ -790,6 +778,59 @@ class _SequenceAnalyzerViewState extends State<SequenceAnalyzerView> {
                     return OverlayButtonsPanel(
                       screenSize: MediaQuery.of(context).size,
                       gameMode: widget.gameMode,
+                    );
+                  },
+                ),
+
+                // OLED Black Screen Saver (Full-screen pure black container on top)
+                Consumer<OverlayButtonsViewModel>(
+                  builder: (context, overlayViewModel, _) {
+                    if (!overlayViewModel.isBlackScreenSaverActive) {
+                      return const SizedBox.shrink();
+                    }
+                    return Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onDoubleTap: () => overlayViewModel.disableBlackScreenSaver(),
+                        child: Container(
+                          color: Colors.black,
+                          child: const Center(
+                            child: Opacity(
+                              opacity: 0.30,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.bedtime_rounded,
+                                    size: 44,
+                                    color: Colors.white,
+                                  ),
+                                  SizedBox(height: 16),
+                                  Text(
+                                    'โหมดประหยัดพลังงาน OLED (บอทกำลังทำงาน)',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    'แตะหน้าจอ 2 ครั้งติดกัน (Double Tap) เพื่อเปิดหน้าจอ',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     );
                   },
                 ),

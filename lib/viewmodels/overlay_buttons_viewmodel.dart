@@ -304,11 +304,15 @@ class GameModeSessionState {
       return false;
     }
 
-    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คำสั่งผู้ใช้: "ปลดล็อกความปลอดภัยของเงินทุน"
-    // ปลดล็อกไม่บล็อกด้วยค่า Chaos (ปลดล็อกความปลอดภัยของเงินทุน) แต่ยังคงเคารพคำสั่ง holdFire
+    // 6. SELECTIVE RECOVERY GATE (Priority 5) - คำสั่งผู้ใช้: 🎯 Sniper Recovery (ระบบทวงหนี้แบบมือปืน)
+    // หาก recoveryClearance เป็น holdFire ให้ส่งคืน false (เดิน Base Bet สอดแนมดูดซับจังหวะ ถนอมพอร์ต 100%)
+    // และเมื่อ recoveryClearance เป็น full100 ให้ผ่านเกณฑ์เข้า recovery ลั่นไกไม้เดียวจบ
     if (omniResult != null) {
       if (omniResult.recoveryClearance == RecoveryClearance.holdFire) {
         return false;
+      }
+      if (omniResult.recoveryClearance == RecoveryClearance.full100) {
+        return true;
       }
     }
 
@@ -364,6 +368,10 @@ class GameModeSessionState {
 }
 
 class OverlayButtonsViewModel with ChangeNotifier {
+  /// ⏱️ Fixed delay to wait for WebView DOM to completely load and render after reload()
+  /// Independent of speed multiplier to prevent rushing before DOM elements are attached.
+  static const int postBreakReloadDelayMs = 6500;
+
   // Game Mode Support (Towers vs Mines)
   GameMode _activeGameMode = GameMode.towers;
   GameMode get activeGameMode => _activeGameMode;
@@ -402,6 +410,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
   bool _showMarkers = true;
   bool _isControlCollapsed = false;
   bool _isSequencePanelCollapsed = false;
+  bool _isBlackScreenSaverActive = false;
   Offset _controlPosition = const Offset(20, 100);
   String? _activeButtonId;
   String? _draggingButtonId;
@@ -409,6 +418,10 @@ class OverlayButtonsViewModel with ChangeNotifier {
   double _speedMultiplier = 1.0;
   String? _recordingButtonId;
   late SharedPreferences _prefs;
+
+  /// 🛡️ Typing status tracked purely in Dart layer to avoid declaring Symbols on window (SEC-02)
+  bool _isTypingBetAmount = false;
+  bool get isTypingBetAmount => _isTypingBetAmount;
 
   // --- Stop Loss / Stop Profit / Safety (Mode-Isolated) ---
   final Map<GameMode, bool> _isStopProfitEnabledByMode = {
@@ -433,6 +446,12 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
   DateTime? _sessionStartTime;
   DateTime? get sessionStartTime => _sessionStartTime;
+
+  /// 🛡️ Rate-limiting Web DOM Client Seed rotation (Max once every 2 hours to prevent FaucetPay detection)
+  DateTime? _lastWebSeedRotationTime;
+  DateTime? get lastWebSeedRotationTime => _lastWebSeedRotationTime;
+  static const Duration _minWebSeedRotationInterval = Duration(hours: 2);
+  static Duration get minWebSeedRotationInterval => _minWebSeedRotationInterval;
 
   bool _isBreakActive = false;
 
@@ -496,6 +515,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
   bool get showMarkers => _showMarkers;
   bool get isControlCollapsed => _isControlCollapsed;
   bool get isSequencePanelCollapsed => _isSequencePanelCollapsed;
+  bool get isBlackScreenSaverActive => _isBlackScreenSaverActive;
   
   String? getActiveButtonId(GameMode mode) => getState(mode).activeButtonId;
   String? get activeButtonId => _activeButtonId ?? getActiveButtonId(_activeGameMode);
@@ -514,12 +534,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
       _isStopProfitEnabledByMode[mode ?? _activeGameMode] ?? false;
   double getStopProfitPercent([GameMode? mode]) =>
       _stopProfitPercentByMode[mode ?? _activeGameMode] ?? 10.0;
-  double getAutoStopLossPercent([GameMode? mode]) =>
-      getStopProfitPercent(mode) * 0.8;
+  double getAutoStopLossPercent([GameMode? mode]) => 0.0;
 
   bool get isStopProfitEnabled => isStopProfitEnabledFor(_activeGameMode);
   double get stopProfitPercent => getStopProfitPercent(_activeGameMode);
-  double get autoStopLossPercent => getAutoStopLossPercent(_activeGameMode);
+  double get autoStopLossPercent => 0.0;
   bool get is24HourMode => _is24HourMode;
   int get maxM5Steps => _maxM5Steps;
   String get stopReason => _stopReason;
@@ -532,23 +551,40 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // 🛡️ DOM State Readiness Guard & Slow Network Watchdog Configuration
+  Duration domReadinessWatchdogTimeout = const Duration(seconds: 15);
+  Duration domReadinessPollInterval = const Duration(milliseconds: 250);
+
+  @visibleForTesting
+  Future<String> Function(String markerId, {GameMode? mode})? detectVisualOutcomeOverride;
+
+  @visibleForTesting
+  Future<bool> Function({GameMode? mode, String? targetMarker})? gridOrTileActiveOverride;
+
+  @visibleForTesting
+  Future<bool> Function({
+    required GameMode mode,
+    required double balanceBeforeRound,
+    String? targetMarker,
+  })? domReadinessCheckerOverride;
+
   TrainingDataLogger get trainingDataLogger => _trainingDataLogger;
 
-  // Dynamic Recovery Profit Target Level (Towers: Level 7 42%, Mines: Level 1 7%)
+  // Dynamic Recovery Profit Target Level (Towers: Level 6 39%, Mines: Level 7 42%)
   final Map<GameMode, double> _recoveryProfitPercentByMode = {
-    GameMode.towers: 0.42, // Level 7: 42% (Default for Towers)
-    GameMode.mines: 0.48,  // Level 8: 48% (Default for Mines 9m/16g)
+    GameMode.towers: 0.39, // Level 6: 39% (Default for Towers)
+    GameMode.mines: 0.42,  // Level 7: 42% (Default for Mines)
   };
 
   double getRecoveryProfitPercent(GameMode mode) =>
       _recoveryProfitPercentByMode[mode] ??
-      (mode == GameMode.towers ? 0.42 : 0.48);
+      (mode == GameMode.towers ? 0.39 : 0.42);
 
   double get recoveryProfitPercent =>
       getRecoveryProfitPercent(_activeGameMode);
 
   /// Returns the base bet floor for the specified mode and coin.
-  /// - Towers: DOGE: 0.00007882, POL: 0.00000903, USDT: 0.000005
+  /// - Towers: DOGE: 0.00007882, POL: 0.00000903, USDT: 0.000005, FEY: 0.00171871, PEPE: 0.3859, DGB: 0.000743
   /// - Mines (Polpick): 0.00001
   double getFloorBetForMode(GameMode mode, {String? coinType}) {
     final coin = (coinType ??
@@ -567,6 +603,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
     if (coin == 'POL' || coin == 'POLYGON' || coin == 'MATIC') {
       return 0.00000903;
     }
+    if (coin == 'FEY' || coin == 'FEYORRA') {
+      return 0.00171871;
+    }
+    if (coin == 'PEPE') {
+      return 0.3859;
+    }
+    if (coin == 'DGB' || coin == 'DIGIBYTE') {
+      return 0.000743;
+    }
     return 0.00007882;
   }
 
@@ -576,9 +621,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
     {'level': 3, 'label': 'Level 3: 18%', 'value': 0.18},
     {'level': 4, 'label': 'Level 4: 25%', 'value': 0.25},
     {'level': 5, 'label': 'Level 5: 31%', 'value': 0.31},
-    {'level': 6, 'label': 'Level 6: 39%', 'value': 0.39},
-    {'level': 7, 'label': 'Level 7: 42% (Default Towers)', 'value': 0.42},
-    {'level': 8, 'label': 'Level 8: 48% (Default Mines 9m/16g)', 'value': 0.48},
+    {'level': 6, 'label': 'Level 6: 39% (Default Towers)', 'value': 0.39},
+    {'level': 7, 'label': 'Level 7: 42% (Default Mines)', 'value': 0.42},
+    {'level': 8, 'label': 'Level 8: 48%', 'value': 0.48},
   ];
 
   int get consecutiveLossesStreak => getState(_activeGameMode).consecutiveLossesStreak;
@@ -703,7 +748,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
     _isControlCollapsed = _prefs.getBool('overlay_control_collapsed') ?? false;
     _isSequencePanelCollapsed =
         _prefs.getBool('overlay_seq_panel_collapsed') ?? false;
-    _speedMultiplier = _prefs.getDouble('overlay_speed_multiplier') ?? 1.0;
+    final savedSpeed = _prefs.getDouble('overlay_speed_multiplier') ?? 1.0;
+    _speedMultiplier = savedSpeed.clamp(0.5, 1.0);
 
     await loadButtonPositions();
     await loadSequenceFromStorage();
@@ -721,9 +767,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
     final double towersSaved = _prefs.getDouble('recovery_profit_percent_towers') ??
         _prefs.getDouble('recovery_profit_percent') ??
-        0.42;
+        0.39;
     final double minesSaved =
-        _prefs.getDouble('recovery_profit_percent_mines') ?? 0.48;
+        _prefs.getDouble('recovery_profit_percent_mines') ?? 0.42;
 
     _recoveryProfitPercentByMode[GameMode.towers] = towersSaved;
     _recoveryProfitPercentByMode[GameMode.mines] = minesSaved;
@@ -759,7 +805,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         return item['level'] as int;
       }
     }
-    return mode == GameMode.towers ? 7 : 8;
+    return mode == GameMode.towers ? 6 : 7;
   }
 
   void cycleRecoveryProfitLevel({GameMode? mode}) {
@@ -842,9 +888,24 @@ class OverlayButtonsViewModel with ChangeNotifier {
     notifyListeners();
   }
 
+  void toggleBlackScreenSaver() {
+    _isBlackScreenSaverActive = !_isBlackScreenSaverActive;
+    notifyListeners();
+  }
+
+  void disableBlackScreenSaver() {
+    if (_isBlackScreenSaverActive) {
+      _isBlackScreenSaverActive = false;
+      notifyListeners();
+    }
+  }
+
   void setSpeedMultiplier(double value) {
-    _speedMultiplier = value;
-    _prefs.setDouble('overlay_speed_multiplier', value);
+    final clamped = value.clamp(0.5, 1.0);
+    _speedMultiplier = clamped;
+    try {
+      _prefs.setDouble('overlay_speed_multiplier', clamped);
+    } catch (_) {}
     notifyListeners();
   }
 
@@ -893,9 +954,6 @@ class OverlayButtonsViewModel with ChangeNotifier {
               document.head.appendChild(m);
             }
             window.dispatchEvent(new Event('resize'));
-            
-            var oldStyle = document.getElementById('golden-zoom-style');
-            if (oldStyle) oldStyle.remove();
           """,
         );
       }
@@ -1170,11 +1228,36 @@ class OverlayButtonsViewModel with ChangeNotifier {
   /// Alias for backwards compatibility
   Future<bool> ensureMediumDifficulty({GameMode? mode}) => ensureDifficulty(mode: mode);
 
-    /// 🔄 Rotate Client Seed directly on FaucetPay Web DOM to reset Nonce and avoid long-session PRNG cluster traps
-  Future<bool> rotateWebClientSeed({GameMode? mode}) async {
+  @visibleForTesting
+  void setLastWebSeedRotationTimeForTesting(DateTime? time) {
+    _lastWebSeedRotationTime = time;
+  }
+
+  /// 🔄 Rotate Client Seed directly on FaucetPay Web DOM to reset Nonce and avoid long-session PRNG cluster traps
+  /// Rate-limited to max once every 2 hours unless [force] is true.
+  Future<bool> rotateWebClientSeed({GameMode? mode, bool force = false}) async {
     final targetMode = mode ?? _activeGameMode;
+
+    // Check 2-hour cooldown for DOM seed rotation unless force: true
+    final now = DateTime.now();
+    final bool cooldownActive = _lastWebSeedRotationTime != null &&
+        now.difference(_lastWebSeedRotationTime!) < _minWebSeedRotationInterval;
+
+    if (!force && cooldownActive) {
+      debugPrint(
+        '[WEB SEED ROTATE] ⏳ [${targetMode.displayName}] Skipping DOM Seed rotation (Cooldown active: ${_minWebSeedRotationInterval.inHours}h). Internal app stats refreshed.',
+      );
+      OmniMatrixEngine.instance.rotateSeed();
+      OmniMatrixEngine.instance.pruneHistory(mode: targetMode);
+      return false;
+    }
+
     final controller = getWebViewController(targetMode);
-    if (controller == null) return false;
+    if (controller == null) {
+      OmniMatrixEngine.instance.rotateSeed();
+      OmniMatrixEngine.instance.pruneHistory(mode: targetMode);
+      return false;
+    }
 
     final String newRandomSeed = Iterable.generate(
       16,
@@ -1212,6 +1295,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         })()
       """);
 
+      _lastWebSeedRotationTime = now;
       OmniMatrixEngine.instance.rotateSeed();
       OmniMatrixEngine.instance.pruneHistory(mode: targetMode);
 
@@ -1437,7 +1521,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
           }
 
           final double baseline = state.sessionStartBalance ?? 0.0;
-          if (baseline > 0.00000001 && curBal > 0.00000001 && curBal < baseline) {
+          if (stopLossLimit > 0.00000001 && baseline > 0.00000001 && curBal > 0.00000001 && curBal < baseline) {
             final double slPnl = ((curBal - baseline) / baseline) * 100.0;
             if (slPnl <= -stopLossLimit) {
               await _handleStopLossReached(
@@ -1589,8 +1673,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
     _saveMilestonesToPrefs();
 
     _stopReason =
-        '🛑 AUTO STOP-LOSS triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Limit: -${stopLossPercent.toStringAsFixed(4)}% [80% of TP]). Cut-loss executed (Debt reset to 0). Taking a 1-2 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Baseline reset.';
+        '🛑 AUTO STOP-LOSS triggered at ${pnl.toStringAsFixed(4)}% on ${mode.displayName} (Limit: -${stopLossPercent.toStringAsFixed(4)}% [100% of TP]). Cut-loss executed (Debt reset to 0). Taking a 1-2 hour break ($breakMinutes mins) until ${endTime.hour.toString().padLeft(2, "0")}:${endTime.minute.toString().padLeft(2, "0")}. Baseline reset.';
     debugPrint('[AUTO STOP-LOSS] 🛑 $_stopReason');
+    debugPrint('[AUTO STOP-LOSS 🛑] [${mode.displayName}] Set to exact 100% of Stop-Profit: ${stopLossPercent.toStringAsFixed(2)}%');
 
     // 5. Start break countdown updates via _startBreakCountdownTimer() and notifyListeners()
     _startBreakCountdownTimer();
@@ -1639,85 +1724,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
   Future<bool> testCheckStopProfitInline(int runToken, {GameMode? mode}) =>
       _checkStopProfitInline(runToken, mode: mode);
 
-  /// 🛡️ SHIELD 2: AUTO STOP-LOSS ENGINE (80% of Stop-Profit Ratio & Cut-Loss Protocol)
+  /// 🛡️ SHIELD 2: AUTO STOP-LOSS ENGINE (DISABLED 100% per user directive: "ให้เอา Stop loss ออกไป")
   Future<bool> _checkStopLossInline(int runToken, {GameMode? mode}) async {
-    final targetMode = mode ?? _activeGameMode;
-    final state = getState(targetMode);
-
-    // 🛡️ IN-FLIGHT BET GUARD: Never evaluate Stop Loss mid-round while bet stake is deducted
-    if (state.isRoundInProgress) {
-      return false;
-    }
-
-    final isTpEnabled = isStopProfitEnabledFor(targetMode);
-    if (!isTpEnabled || isBreakActiveFor(targetMode)) {
-      return false;
-    }
-
-    final stopLossLimit = getAutoStopLossPercent(targetMode);
-    if (stopLossLimit <= 0.00000001) {
-      return false;
-    }
-
-    final analyzer = _analyzersByMode[targetMode] ?? _sequenceAnalyzerViewModel;
-    double curBalance = await _getBalanceDouble(mode: targetMode);
-    if (curBalance <= 0.00000001) {
-      if (analyzer != null) {
-        final balStr = analyzer.getBalanceForMode(targetMode);
-        if (balStr != null) {
-          curBalance = double.tryParse(balStr.replaceAll(',', '').trim()) ?? 0.0;
-        }
-      }
-      if (curBalance <= 0.00000001) {
-        curBalance = state.lastSettledBalance > 0.00000001
-            ? state.lastSettledBalance
-            : (state.sessionStartBalance ?? 0.0);
-      }
-    }
-    if (curBalance <= 0.00000001) {
-      _stopReason = '🚨 ZERO BALANCE EMERGENCY HALT: Balance is 0 on ${targetMode.displayName}';
-      debugPrint('[HARD STOP-LOSS] 🛑 [${targetMode.displayName}] $_stopReason');
-      state.isLossStreakBaseBetLocked = true;
-      state.recoveryCircuitBreakerActive = true;
-      stopSequence(mode: targetMode);
-      return true;
-    }
-
-    // Ensure baseline is state.sessionStartBalance. If not set, initialize it from curBalance (or analyzer initial balance) and return false.
-    if (state.sessionStartBalance == null || state.sessionStartBalance! <= 0.00000001) {
-      double? initBal;
-      if (analyzer != null) {
-        final initStr = analyzer.getInitialBalanceForMode(targetMode);
-        if (initStr != null) {
-          initBal = double.tryParse(initStr.replaceAll(',', '').trim());
-        }
-      }
-      state.sessionStartBalance = (initBal != null && initBal > 0.00000001) ? initBal : curBalance;
-      return false;
-    }
-
-    final double baseline = state.sessionStartBalance!;
-
-    // Stop-Loss can NEVER trigger if balance is at or above initial session start balance,
-    // even if it dropped from a higher peak ATH
-    if (curBalance >= baseline) {
-      return false;
-    }
-
-    final double pnl = ((curBalance - baseline) / baseline) * 100.0;
-    if (pnl >= 0.0) {
-      return false;
-    }
-
-    if (pnl <= -stopLossLimit) {
-      await _handleStopLossReached(
-        mode: targetMode,
-        pnl: pnl,
-        stopLossPercent: stopLossLimit,
-      );
-      return true;
-    }
-
+    // Disabled completely: Never cut loss, never reset debt, never halt
     return false;
   }
 
@@ -1752,86 +1761,272 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
     debugPrint('🎯 [ALIGN M0] [${targetMode.displayName}] Target M0 Center Y in WebView: $targetM0CenterY');
 
-    // Run alignment script up to 3 passes to ensure layout is settled
-    for (int attempt = 0; attempt < 3; attempt++) {
+    // 🛡️ DOM Readiness Polling after reload (up to 20 seconds, poll every 500ms):
+    // Wait until document.readyState === 'complete' AND the Start/Bet button actually appears in the DOM
+    bool isDomReady = false;
+    for (int poll = 0; poll < 40; poll++) {
       try {
-        final dynamic result = await controller.evaluateJavascript(source: """
-          (function(targetY) {
-            let btn = null;
+        final dynamic checkResult = await controller.evaluateJavascript(source: """
+          (function() {
+            if (document.readyState !== 'complete') return false;
             const candidateSelectors = [
-              '#start_game', '#start', '#bet_button', '#btn_start', '#play_button',
-              'button#start', 'button#bet', '.btn-start', '.start-btn', '.btn-bet',
-              'input#start', 'input#start_game', 'a#start_game', 'button.start-game',
-              'button[type="submit"]', 'button.btn-primary', 'button.btn-success'
+              '#btn_bet', '#betBtn', 'button#btn_bet', 'button#betBtn', 'button.btn-bet', '.btn-bet',
+              'button.btn-primary', '#bet_button', '#btn_start', '#btn-start', 'button#start', 'button#bet',
+              '[data-action="bet"]', '[data-action="start"]', 'form#bet_form button', 'form#betForm button',
+              'input#start', 'input#btn_bet', '#start_game', '#start', '#play_button', '.btn-start',
+              '.start-btn', 'button.btn-success', 'button[type="submit"]', 'input#start_game',
+              'a#start_game', 'button.start-game', '.play-btn', '.game-btn', '.mine-btn'
             ];
             for (let s of candidateSelectors) {
               let el = document.querySelector(s);
               if (el) {
                 let r = el.getBoundingClientRect();
-                if (r.width > 20 && r.height > 15) {
-                  btn = el;
-                  break;
-                }
+                if (r.width > 20 && r.height > 15 && r.height <= 150) return true;
               }
             }
-            if (!btn) {
-              let allButtons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div'));
-              for (let el of allButtons) {
-                let txt = (el.innerText || el.textContent || el.value || '').trim().toLowerCase();
-                if (txt === 'start' || txt === 'start game' || txt === 'bet' || txt === 'play' || txt === 'start bet') {
-                  let r = el.getBoundingClientRect();
-                  if (r.width > 20 && r.height > 15) {
-                    btn = el;
-                    break;
-                  }
-                }
+            let buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"], a.btn, a'));
+            for (let el of buttons) {
+              let txt = (el.innerText || el.textContent || el.value || '').trim().toLowerCase();
+              if (txt.length <= 25 &&
+                  (txt === 'start' || txt === 'start game' || txt === 'bet' || txt === 'play' ||
+                   txt === 'play game' || txt === 'mine' || txt === 'start bet' ||
+                   txt.startsWith('start') || txt.startsWith('bet') || txt.startsWith('play'))) {
+                let r = el.getBoundingClientRect();
+                if (r.width > 20 && r.height > 15 && r.height <= 150) return true;
               }
             }
-            if (!btn) {
-              return { success: false, reason: 'start_button_not_found' };
-            }
-            let rect = btn.getBoundingClientRect();
-            let btnCenterY = rect.top + (rect.height / 2);
-            let diffY = btnCenterY - targetY;
-            if (Math.abs(diffY) > 3) {
-              if (window.scrollBy) {
-                window.scrollBy(0, diffY);
-              } else {
-                document.documentElement.scrollTop += diffY;
-                document.body.scrollTop += diffY;
-              }
-            }
-            let finalRect = btn.getBoundingClientRect();
-            let finalCenterY = finalRect.top + (finalRect.height / 2);
-            return {
-              success: true,
-              initialBtnCenterY: btnCenterY,
-              targetY: targetY,
-              diffY: diffY,
-              finalCenterY: finalCenterY,
-              finalDiff: Math.abs(finalCenterY - targetY)
-            };
-          })($targetM0CenterY)
+            return false;
+          })()
         """);
+        if (checkResult == true || checkResult.toString() == 'true') {
+          isDomReady = true;
+          debugPrint('🟢 [ALIGN M0] DOM readiness confirmed after ${(poll + 1) * 500}ms');
+          break;
+        }
+      } catch (e) {
+        debugPrint('⚠️ [ALIGN M0 POLL] $e');
+      }
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
 
-        debugPrint('🎯 [ALIGN M0 RESULT] Attempt \${attempt + 1}: \$result');
+    if (!isDomReady) {
+      debugPrint('⚠️ [ALIGN M0] DOM readiness timeout (20s) - Proceeding with best-effort alignment attempt');
+    }
+
+    // Run alignment script up to 15 passes to ensure layout is settled
+    for (int attempt = 0; attempt < 15; attempt++) {
+      try {
+        final dynamic result = await controller.evaluateJavascript(
+          source: "(${_getAlignMineJs()})($targetM0CenterY)",
+        );
+
+        debugPrint('🎯 [ALIGN M0 RESULT] Attempt ${attempt + 1}: $result');
         if (result is Map && result['success'] == true) {
           final num finalDiff = result['finalDiff'] ?? 0;
-          if (finalDiff <= 5) {
-            debugPrint('✅ [ALIGN M0 SUCCESS] Start button precisely aligned with M0 (diff: \$finalDiff px)');
+          if (finalDiff <= 4) {
+            debugPrint('✅ [ALIGN M0 SUCCESS] Start button precisely aligned with M0 (diff: $finalDiff px)');
             break;
           }
         }
       } catch (e) {
-        debugPrint('⚠️ [ALIGN M0 ERROR] \$e');
+        debugPrint('⚠️ [ALIGN M0 ERROR] $e');
       }
-      await Future.delayed(const Duration(milliseconds: 300));
+      await Future.delayed(const Duration(milliseconds: 500));
     }
   }
+
+  String _getAlignMineJs() {
+    return """
+      function(targetY) {
+        let btn = null;
+        const candidateSelectors = [
+          '#btn_bet', '#betBtn', 'button#btn_bet', 'button#betBtn', 'button.btn-bet', '.btn-bet',
+          'button.btn-primary', '#bet_button', '#btn_start', '#btn-start', 'button#start', 'button#bet',
+          '[data-action="bet"]', '[data-action="start"]', 'form#bet_form button', 'form#betForm button',
+          'input#start', 'input#btn_bet', '#start_game', '#start', '#play_button', '.btn-start',
+          '.start-btn', 'button.btn-success', 'button[type="submit"]', 'input#start_game',
+          'a#start_game', 'button.start-game', '.play-btn', '.game-btn', '.mine-btn'
+        ];
+        for (let s of candidateSelectors) {
+          let el = document.querySelector(s);
+          if (el) {
+            let r = el.getBoundingClientRect();
+            if (r.width > 20 && r.height > 15 && r.height <= 150) {
+              btn = el;
+              break;
+            }
+          }
+        }
+        if (!btn) {
+          let allButtons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"], a.btn, a'));
+          for (let el of allButtons) {
+            let txt = (el.innerText || el.textContent || el.value || '').trim().toLowerCase();
+            if (txt.length <= 25 &&
+                (txt === 'start' || txt === 'start game' || txt === 'bet' || txt === 'play' ||
+                 txt === 'play game' || txt === 'mine' || txt === 'start bet' ||
+                 txt.startsWith('start') || txt.startsWith('bet') || txt.startsWith('play'))) {
+              let r = el.getBoundingClientRect();
+              if (r.width > 20 && r.height > 15 && r.height <= 150) {
+                btn = el;
+                break;
+              }
+            }
+          }
+        }
+        if (!btn) {
+          return { success: false, reason: 'start_button_not_found' };
+        }
+        let rect = btn.getBoundingClientRect();
+        let btnCenterY = rect.top + (rect.height / 2);
+        let diffY = btnCenterY - targetY;
+        let scrolledLayer = 'none';
+        if (Math.abs(diffY) > 3) {
+          // Single Scrolling Authority:
+          // Check if button is inside a scrollable parent container with overflow-y
+          let scrollableParent = null;
+          let p = btn.parentElement;
+          while (p && p !== document.body && p !== document.documentElement) {
+            try {
+              let style = window.getComputedStyle(p);
+              let overflowY = style ? style.overflowY : '';
+              if ((overflowY === 'auto' || overflowY === 'scroll') && p.scrollHeight > p.clientHeight) {
+                scrollableParent = p;
+                break;
+              }
+            } catch(e) {}
+            p = p.parentElement;
+          }
+
+          if (scrollableParent) {
+            scrollableParent.scrollTop += diffY;
+            scrolledLayer = 'container';
+          } else {
+            // Main document scrolling: use window.scrollBy as primary authority;
+            // only fallback to scrollingElement if window.scrollBy is unavailable.
+            // NEVER additively scroll both to avoid double-scroll overshoot!
+            let scrolled = false;
+            try {
+              if (typeof window.scrollBy === 'function') {
+                window.scrollBy(0, diffY);
+                scrolled = true;
+                scrolledLayer = 'window';
+              }
+            } catch(e) {}
+            if (!scrolled) {
+              if (document.scrollingElement) {
+                document.scrollingElement.scrollTop += diffY;
+                scrolledLayer = 'scrollingElement';
+              } else if (document.documentElement) {
+                document.documentElement.scrollTop += diffY;
+                scrolledLayer = 'documentElement';
+              } else if (document.body) {
+                document.body.scrollTop += diffY;
+                scrolledLayer = 'body';
+              }
+            }
+          }
+        }
+        let finalRect = btn.getBoundingClientRect();
+        let finalCenterY = finalRect.top + (finalRect.height / 2);
+        return {
+          success: true,
+          initialBtnCenterY: btnCenterY,
+          targetY: targetY,
+          diffY: diffY,
+          finalCenterY: finalCenterY,
+          finalDiff: Math.abs(finalCenterY - targetY),
+          scrolledLayer: scrolledLayer
+        };
+      }
+    """;
+  }
+
+  @visibleForTesting
+  String getAlignMineJsForTesting(double targetM0CenterY) =>
+      _getAlignMineJs();
 
   @visibleForTesting
   Future<void> testAlignMineStartWithM0({GameMode? mode}) =>
       _alignMineStartWithM0(mode: mode);
+
+  @visibleForTesting
+  String getM0PreClickGuardJs(double targetAmount) {
+    return """
+      (function() {
+        function findInput() {
+          let isMinesMode = window.location.href.includes('polpick') || window.location.href.includes('gems.php') || window.location.href.includes('mines');
+          if (isMinesMode) {
+            let allInputs = Array.from(document.querySelectorAll('input')).filter(inp => {
+              let t = (inp.type || 'text').toLowerCase();
+              if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
+              let rect = inp.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            });
+            if (allInputs.length > 0) {
+              allInputs.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+              return allInputs[0];
+            }
+          }
+
+          // 1. Direct explicit selectors for bet amount
+          let selectors = [
+            'input#amount', 'input#bet_amount', 'input#bet-amount',
+            'input[name="amount"]', 'input[name="bet_amount"]',
+            'input.bet-amount', 'input.bet_amount',
+            'input[placeholder*="Amount" i]', 'input[placeholder*="Bet" i]',
+            'input[aria-label*="amount" i]'
+          ];
+          for (let s of selectors) {
+            let el = document.querySelector(s);
+            if (el && el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio') return el;
+          }
+
+          // 2. Buttons container (Min, Max, 2x, 1/2) for Towers & general modes
+          let buttons = Array.from(document.querySelectorAll('button, a, div, span'));
+          for (let b of buttons) {
+            let txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+            if (txt === 'min' || txt === 'max' || txt === '2x' || txt === '1/2' || txt === '½') {
+              let parent = b.parentElement;
+              for (let i = 0; i < 3; i++) {
+                if (!parent) break;
+                let inp = parent.querySelector('input');
+                if (inp && inp.type !== 'hidden') {
+                  let nameOrId = (inp.name || inp.id || inp.placeholder || '').toLowerCase();
+                  if (!nameOrId.includes('mine') && !nameOrId.includes('count')) return inp;
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+
+          // 3. Filtered inputs ignoring hidden/mines-count
+          let inputs = Array.from(document.querySelectorAll('input')).filter(inp => {
+            let t = (inp.type || 'text').toLowerCase();
+            if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
+            let nameOrId = (inp.name || inp.id || inp.placeholder || inp.getAttribute('aria-label') || '').toLowerCase();
+            if (nameOrId.includes('mine') || nameOrId.includes('bomb') || nameOrId.includes('count')) return false;
+            let rect = inp.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+          if (inputs.length > 0) return inputs[0];
+          return null;
+        }
+
+        let inp = findInput();
+        if (!inp) return { ready: false, reason: 'no_input' };
+        if (inp._typingActive === true) return { ready: false, reason: 'typing' };
+        let valStr = (inp.value || '').trim().replace(/,/g, '');
+        let curVal = parseFloat(valStr);
+        if (isNaN(curVal) || curVal <= 0) return { ready: false, reason: 'empty' };
+        let targetVal = $targetAmount;
+        let diff = Math.abs(curVal - targetVal);
+        if (diff < 0.00000002) {
+          return { ready: true, reason: 'matched', domVal: curVal };
+        }
+        return { ready: false, reason: 'mismatch', domVal: curVal, targetVal: targetVal };
+      })()
+    """;
+  }
 
   Future<void> _executeSequence(int runToken, {GameMode mode = GameMode.towers}) async {
     final state = getState(mode);
@@ -1917,31 +2112,22 @@ class OverlayButtonsViewModel with ChangeNotifier {
     if (state.sessionMaxBalance > 0.00000001 && settledBalance > 0.00000001) {
       final double realDeficit = state.sessionMaxBalance - settledBalance;
       if (realDeficit > 0.00000001) {
-        // 🎯 [PRE-M0 REAL DEBT AUDIT 🔍]
-        // ซิงค์หนี้เฉพาะเมื่ออยู่ในช่วงแพ้ (consecutiveLossesStreak > 0)
-        // และต้องไม่อยู่ในช่วงดูเชิง 15-25 ตา (observation) เพื่อป้องกันหนี้บวมพอง
-        if (state.consecutiveLossesStreak > 0 &&
-            state.observationRoundsRemaining == 0 &&
-            !state.isLossStreakBaseBetLocked) {
-          if (realDeficit > state.totalAccumulatedLoss + 0.00000001) {
-            final double deficitGap = double.parse((realDeficit - state.totalAccumulatedLoss).toStringAsFixed(8));
-            // 🛡️ ป้องกันหนี้กระโดดบวมเกิน 10% ของยอดเงินในคราวเดียว
-            final double maxSafeGap = settledBalance * 0.10;
-            final double safeGap = min(deficitGap, maxSafeGap);
-            state.activeNewLoss += safeGap;
-            state.activeNewLoss = double.parse(state.activeNewLoss.toStringAsFixed(8));
-            debugPrint(
-              '🎯 [PRE-M0 REAL DEBT AUDIT 🔍] [${mode.displayName}] ยอดเงินจริง (${settledBalance.toStringAsFixed(8)}) ต่ำกว่า High New (${state.sessionMaxBalance.toStringAsFixed(8)}) '
-              'ขาดอีก: ${realDeficit.toStringAsFixed(8)} -> ซิงค์หนี้คงค้างเพิ่ม +${safeGap.toStringAsFixed(8)} (หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)}) โดยไม่ล้างตู้แช่แข็ง',
-            );
-          } else if (state.totalAccumulatedLoss > realDeficit + 0.00000001) {
-            state.clampDebtToMax(realDeficit);
+        // 🎯 [PRE-M0 REAL DEBT AUDIT 🔍 - HIGH NEW DEFICIT SYNC]
+        // ห้ามลด sessionMaxBalance เด็ดขาด (Strict Monotonic Non-Decreasing ATH)
+        // หากยอดเงินจริงต่ำกว่า New High (ยอดสูงสุดที่เคยทำได้) ให้ซิงค์หนี้ส่วนต่างเข้าสู่ระบบเสมอ
+        if (realDeficit > state.totalAccumulatedLoss + 0.00000001) {
+          final double deficitGap = double.parse((realDeficit - state.totalAccumulatedLoss).toStringAsFixed(8));
+          state.activeNewLoss += deficitGap;
+          state.activeNewLoss = double.parse(state.activeNewLoss.toStringAsFixed(8));
+          if (state.consecutiveLossesStreak == 0) {
+            state.consecutiveLossesStreak = 1;
           }
-        } else {
-          // ชนะแล้ว หรืออยู่ที่ Base Bet: ถ้าหนี้เป็น 0 ให้ปรับ sessionMaxBalance สู่ยอดเงินจริงปัจจุบัน เพื่อไม่สร้างหนี้ทิพย์
-          if (state.totalAccumulatedLoss <= 0.00000001) {
-            state.sessionMaxBalance = settledBalance;
-          }
+          debugPrint(
+            '🎯 [PRE-M0 REAL DEBT AUDIT 🔍] [${mode.displayName}] ยอดเงินจริง (${settledBalance.toStringAsFixed(8)}) ต่ำกว่า High New (${state.sessionMaxBalance.toStringAsFixed(8)}) '
+            'ขาดอีก: ${realDeficit.toStringAsFixed(8)} -> ซิงค์หนี้คงค้างเพิ่ม +${deficitGap.toStringAsFixed(8)} (หนี้รวม: ${state.totalAccumulatedLoss.toStringAsFixed(8)}) และตั้ง Streak=1 เพื่อเตรียมทวง!',
+          );
+        } else if (state.totalAccumulatedLoss > realDeficit + 0.00000001) {
+          state.clampDebtToMax(realDeficit);
         }
       } else if (settledBalance >= state.sessionMaxBalance) {
         state.sessionMaxBalance = settledBalance;
@@ -1997,9 +2183,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
         // 2. หน้า Mine: Refresh หน้าเว็บ แล้วเลื่อนขึ้นให้ปุ่ม Start ในเว็บตรงกับ Marker M0
         final controller = getWebViewController(mode);
         if (controller != null) {
-          debugPrint('🔄 [24/7 RESUME] [${mode.displayName}] ครบกำหนดพัก 2-3 ชม. ทำการ Refresh หน้าเว็บ...');
+          debugPrint('🔄 [24/7 RESUME] [${mode.displayName}] ครบกำหนดพัก รีเฟรชหน้าเว็บ...');
           await controller.reload();
-          await Future.delayed(Duration(milliseconds: (6000 / _speedMultiplier).round()));
+          await Future.delayed(const Duration(milliseconds: postBreakReloadDelayMs));
         }
 
         if (_shouldAbort(runToken, mode: mode)) break;
@@ -2017,8 +2203,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
         if (curBalance <= 0.00000001) curBalance = state.lastSettledBalance;
         state.sessionStartBalance = curBalance;
         state.sessionProfitBaseline = curBalance;
-        state.sessionMaxBalance = curBalance;
-        state.protectedPrincipal = curBalance * 0.97;
+        state.sessionMaxBalance = max(state.sessionMaxBalance, curBalance);
+        state.protectedPrincipal = max(state.protectedPrincipal ?? 0.0, curBalance * 0.97);
         state.resetDebt();
         state.lastRoundWasWin = null;
         state.consecutiveLossesStreak = 0;
@@ -2258,63 +2444,31 @@ class OverlayButtonsViewModel with ChangeNotifier {
       final m0WebCtrl = getWebViewController(mode);
       if (m0WebCtrl != null) {
         int guardWaitMs = 0;
-        const int maxGuardWaitMs = 6000;
+        const int maxGuardWaitMs = 12000;
+        // 🛡️ SEC-02: Wait for Dart-level typing flag first without polling window Symbols
+        while (_isTypingBetAmount && guardWaitMs < maxGuardWaitMs && !_shouldAbort(runToken, mode: mode)) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          guardWaitMs += 100;
+        }
         while (guardWaitMs < maxGuardWaitMs && !_shouldAbort(runToken, mode: mode)) {
-          final dynamic checkResult = await m0WebCtrl.evaluateJavascript(source: """
-            (function() {
-              if (window[Symbol.for('gp_typing_busy')] === true) return { ready: false, reason: 'typing' };
-              let inp = null;
-              let isMinesMode = window.location.href.includes('polpick') || window.location.href.includes('gems.php') || window.location.href.includes('mines');
-              if (isMinesMode) {
-                let allInputs = Array.from(document.querySelectorAll('input')).filter(inp => {
-                  let t = (inp.type || 'text').toLowerCase();
-                  if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
-                  let rect = inp.getBoundingClientRect();
-                  return rect.width > 0 && rect.height > 0;
-                });
-                if (allInputs.length > 0) {
-                  allInputs.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
-                  inp = allInputs[0];
-                }
-              }
-              if (!inp) {
-                let selectors = ['input#amount', 'input#bet_amount', 'input#bet-amount', 'input[name="amount"]', 'input[name="bet_amount"]', 'input.bet-amount', 'input.bet_amount', 'input[placeholder*="Amount" i]', 'input[placeholder*="Bet" i]', 'input[aria-label*="amount" i]'];
-                for (let s of selectors) {
-                  let el = document.querySelector(s);
-                  if (el && el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio') { inp = el; break; }
-                }
-              }
-              if (!inp) {
-                let allInputs = Array.from(document.querySelectorAll('input')).filter(i => {
-                  let t = (i.type || 'text').toLowerCase();
-                  if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
-                  let nameOrId = (i.name || i.id || i.placeholder || i.getAttribute('aria-label') || '').toLowerCase();
-                  if (nameOrId.includes('mine') || nameOrId.includes('bomb') || nameOrId.includes('count')) return false;
-                  let rect = i.getBoundingClientRect();
-                  return rect.width > 0 && rect.height > 0;
-                });
-                if (allInputs.length > 0) {
-                  inp = allInputs[0];
-                }
-              }
-              if (!inp) return { ready: true, reason: 'no_input' };
-              let valStr = (inp.value || '').trim().replace(/,/g, '');
-              let curVal = parseFloat(valStr);
-              if (isNaN(curVal) || curVal <= 0) return { ready: true, reason: 'empty' };
-              let targetVal = ${state.currentBetAmount};
-              let diff = Math.abs(curVal - targetVal);
-              if (diff < 0.00000002) {
-                return { ready: true, reason: 'matched', domVal: curVal };
-              }
-              return { ready: false, reason: 'mismatch', domVal: curVal, targetVal: targetVal };
-            })()
-          """).timeout(const Duration(milliseconds: 400), onTimeout: () => {'ready': false, 'reason': 'timeout'});
+          final dynamic checkResult = await m0WebCtrl.evaluateJavascript(
+            source: getM0PreClickGuardJs(state.currentBetAmount),
+          ).timeout(const Duration(milliseconds: 400), onTimeout: () => {'ready': false, 'reason': 'timeout'});
 
           bool isReady = false;
           if (checkResult is Map) {
             isReady = checkResult['ready'] == true;
           } else if (checkResult is bool) {
             isReady = checkResult;
+          } else if (checkResult is String) {
+            try {
+              final decoded = jsonDecode(checkResult);
+              if (decoded is Map) {
+                isReady = decoded['ready'] == true;
+              }
+            } catch (_) {
+              isReady = checkResult.contains('"ready":true') || checkResult.contains('"ready": true');
+            }
           }
 
           if (isReady) {
@@ -2364,15 +2518,52 @@ class OverlayButtonsViewModel with ChangeNotifier {
       await _performButtonAction('M0', mode: mode);
       if (_shouldAbort(runToken, mode: mode)) break;
 
-      // 2. 🕒 หลังกดเริ่ม M0 ➔ รอเซิร์ฟเวอร์โหลดและมองกระดาน 3.0s - 5.5s (User Directive)
-      final int m0LoadDelay = 3000 + Random().nextInt(2500);
-      debugPrint('[PACE] 🕒 [${mode.displayName}] Waiting for server load & observing board: ${m0LoadDelay}ms (3.0s - 5.5s)');
-      await Future.delayed(Duration(milliseconds: (m0LoadDelay / _speedMultiplier).round()));
+      // 2. 🛡️ DOM State Readiness Guard & Slow Network Watchdog (Active poll up to 15s)
+      final bool isGameStarted = await waitForDomGameReadiness(
+        mode: mode,
+        balanceBeforeRound: balanceBeforeRound,
+        runToken: runToken,
+        targetMarker: targetMarker,
+      );
       if (_shouldAbort(runToken, mode: mode)) break;
 
-      // 3. 🕒 ก่อนกดเลือกกล่อง M1/M2/M3 ➔ มีจังหวะตัดสินใจ 250ms - 300ms (User Directive)
-      final int humanDecideDelay = 250 + Random().nextInt(50);
-      debugPrint('[PACE] 🕒 [${mode.displayName}] Decision delay: ${humanDecideDelay}ms (250ms - 300ms)');
+      if (!isGameStarted) {
+        // Slow Network Watchdog triggered: Game did not start within 15s due to slow internet!
+        // Re-verify balance and break round safely
+        final double verifyBal = await _getBalanceDouble(mode: mode);
+        if (balanceBeforeRound > 0.00000001 &&
+            verifyBal > 0.00000001 &&
+            verifyBal < balanceBeforeRound - 0.00000001) {
+          final double stallLoss = balanceBeforeRound - verifyBal;
+          state.activeNewLoss += stallLoss;
+          state.activeNewLoss = double.parse(state.activeNewLoss.toStringAsFixed(8));
+          state.consecutiveLossesStreak++;
+          state.lastRoundWasWin = false;
+          debugPrint(
+            '🚨 [STALL LOSS] 💸 [${mode.displayName}] Balance dropped during network stall: -${stallLoss.toStringAsFixed(8)}',
+          );
+          if (await _checkStopLossInline(runToken, mode: mode)) {
+            continue;
+          }
+        } else {
+          debugPrint(
+            '[DOM READINESS 🛡️] 🔄 [${mode.displayName}] No balance lost. Safely resetting round state for retry.',
+          );
+        }
+        state.isRoundInProgress = false;
+        await Future.delayed(const Duration(seconds: 1));
+        continue;
+      }
+
+      // 3. 🕒 เมื่อยืนยันว่าเกมเริ่มแล้ว ➔ รอสังเกตการณ์อย่างเป็นธรรมชาติ (Human observation dwell time: at least 2.5s - 3.5s)
+      final int dwellMs = 2500 + Random().nextInt(1001); // 2500ms - 3500ms (2.5s - 3.5s)
+      debugPrint('[PACE] 🕒 [${mode.displayName}] Game confirmed started! Natural human observation dwell time: ${dwellMs}ms (2.5s - 3.5s)');
+      await Future.delayed(Duration(milliseconds: (dwellMs / _speedMultiplier).round()));
+      if (_shouldAbort(runToken, mode: mode)) break;
+
+      // 4. 🕒 ก่อนกดเลือกกล่อง M1/M2/M3 ➔ มีจังหวะตัดสินใจ 350ms - 600ms
+      final int humanDecideDelay = 350 + Random().nextInt(251);
+      debugPrint('[PACE] 🕒 [${mode.displayName}] Decision delay: ${humanDecideDelay}ms (350ms - 600ms)');
       await Future.delayed(Duration(milliseconds: (humanDecideDelay / _speedMultiplier).round()));
       if (_shouldAbort(runToken, mode: mode)) break;
 
@@ -2501,6 +2692,121 @@ class OverlayButtonsViewModel with ChangeNotifier {
           }
           if (_shouldAbort(runToken, mode: mode)) break;
 
+          // 🚨 FALSE WIN INTERCEPTION (Slow Network / Visual Desync Guard)
+          // "เพราะว่าบางครั้งมันบอกว่าชนะแต่ยอดเงินไม่เพิ่มขึ้นเป็นเพราะเน็ตช้าครับ"
+          // หาก visual ตรวจจับว่าชนะ (Cashout) แต่ยอดเงินในบัญชีจริงกลับ "ลดลง" (balanceAfterWin < balanceBeforeRound)
+          // แสดงว่าเซิร์ฟเวอร์คิดเป็นแพ้จริง (โดนระเบิด) ต้องสกัดจับเป็น Real Loss ทันที!
+          if (!balanceIncreased &&
+              balanceBeforeRound > 0.00000001 &&
+              balanceAfterWin > 0.00000001 &&
+              balanceAfterWin < balanceBeforeRound - 0.00000001) {
+            final double realLossAmount = double.parse((balanceBeforeRound - balanceAfterWin).toStringAsFixed(8));
+            debugPrint(
+              '🚨 [FALSE WIN INTERCEPTED ⚠️] [${mode.displayName}] Visual showed cashout, but balance dropped from '
+              '${balanceBeforeRound.toStringAsFixed(8)} -> ${balanceAfterWin.toStringAsFixed(8)} '
+              '(Real loss: -${realLossAmount.toStringAsFixed(8)})! Intercepting as real loss.',
+            );
+            state.isRoundInProgress = false;
+            state.lastRoundWasWin = false;
+            state.lastSettledBalance = balanceAfterWin;
+            state.activeNewLoss += realLossAmount;
+            state.activeNewLoss = double.parse(state.activeNewLoss.toStringAsFixed(8));
+            if (state.consecutiveLossesStreak == 0) {
+              state.consecutiveLossesStreak = 1;
+            } else {
+              state.consecutiveLossesStreak++;
+            }
+            if (state.consecutiveLossesStreak > state.peakLossStreak) {
+              state.peakLossStreak = state.consecutiveLossesStreak;
+            }
+            state.recoveryWinsAchieved = 0;
+            state.ghostSniperWinCount = 0;
+            state.justWonRecoveryBet = false;
+            state.consecutiveBaseBetWins = 0;
+
+            final bool wasRecoveryRound = state.isCurrentlyRecoveryRound;
+            state.isCurrentlyRecoveryRound = false;
+
+            if (wasRecoveryRound) {
+              state.consecutiveRecoveryLosses++;
+              if (state.recoveryStepInCycle >= state.maxRecoveryStepsThisCycle) {
+                final int finishedCycle = state.currentRecoveryCycle;
+                final int obsRounds = 8 + Random().nextInt(5);
+                state.observationRoundsRemaining = obsRounds;
+                state.isLossStreakBaseBetLocked = true;
+                state.consecutiveLossesStreak = 0;
+                state.currentRecoveryCycle = finishedCycle < 3 ? finishedCycle + 1 : 1;
+                state.recoveryStepInCycle = 0;
+                transitionRecoveryState(mode, RecoveryState.normal,
+                    reason: 'False win intercepted (Recovery Loss): Reached quota (${state.maxRecoveryStepsThisCycle}) -> retreat to observation');
+                await _ensureBaseBet(runToken, mode: mode);
+              } else {
+                state.recoveryStepInCycle++;
+                state.observationRoundsRemaining = 0;
+                state.isLossStreakBaseBetLocked = false;
+                transitionRecoveryState(mode, RecoveryState.recoveryGate,
+                    reason: 'False win intercepted (Recovery Loss): Proceed to step ${state.recoveryStepInCycle} of ${state.maxRecoveryStepsThisCycle}');
+              }
+            } else {
+              state.recoveryStepInCycle = 1;
+              state.consecutiveLossesStreak = 1;
+              state.isLossStreakBaseBetLocked = false;
+              state.observationRoundsRemaining = 0;
+              state.currentRecoveryCycle = 1;
+              state.randomizeRecoveryQuota();
+              transitionRecoveryState(mode, RecoveryState.recoveryGate,
+                  reason: 'False win intercepted (Base Bet Loss) -> immediate recovery step 1');
+            }
+
+            final String actualClickedChar = (targetMarker == 'M1')
+                ? 'A'
+                : (targetMarker == 'M2' ? 'B' : 'C');
+            _lossSequence.add(actualClickedChar);
+            if (_lossSequence.length > 5) _lossSequence.removeAt(0);
+
+            state.recentRoundsHistory.add(false);
+            if (state.recentRoundsHistory.length > 10) {
+              state.recentRoundsHistory.removeAt(0);
+            }
+
+            final String confirmedBombPos = discoveredBombPos ?? prediction;
+            String gemPos = 'Unknown';
+            final safeOptions = ['A', 'B', 'C'].where((c) => c != confirmedBombPos).toList();
+            if (safeOptions.isNotEmpty) {
+              gemPos = safeOptions.first;
+            } else {
+              gemPos = 'A';
+            }
+            try {
+              final analyzer = _analyzersByMode[mode] ?? _sequenceAnalyzerViewModel;
+              await analyzer?.recordInput(
+                gemPos,
+                triggerId: targetMarker,
+                actualBombPos: confirmedBombPos,
+                multiplier: 1.0,
+                selectedAction: prediction,
+                isWin: false,
+              );
+            } catch (e) {
+              debugPrint('[RECORD ERROR] False win intercept loss record: $e');
+            }
+
+            OmniMatrixEngine.instance.recordOutcome(
+              chosenColumn: prediction,
+              won: false,
+              revealedBombPos: confirmedBombPos,
+              mode: mode,
+            );
+            OmniMatrixEngine.instance.rotateSeed(mode: mode);
+            await rotateWebClientSeed(mode: mode);
+            notifyListeners();
+
+            if (await _checkStopLossInline(runToken, mode: mode)) {
+              debugPrint('[SMART FLOW] 🛑 Auto Stop-Loss triggered after FALSE WIN intercept');
+            }
+            continue;
+          }
+
           // 🛡️ Round outcome settled (WIN)
           state.isRoundInProgress = false;
 
@@ -2580,7 +2886,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
           }
 
           final double theoreticalProfit = winningBet * getRecoveryProfitPercent(mode);
-          double actualProfit = theoreticalProfit;
+          double actualProfit = 0.0;
           if (balanceIncreased) {
             final double measuredDelta = balanceAfterWin - balanceBeforeRound;
             actualProfit = measuredDelta > theoreticalProfit ? measuredDelta : theoreticalProfit;
@@ -2596,10 +2902,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
               }
             }
           } else {
-            // ยอดเงินยังไม่ขยับใน DOM (เน็ตช้า แต่เกม Cashout สำเร็จจริง 100% จาก Server)
-            // 🎯 แก้บั๊กเน็ตช้า: ให้ใช้กำไรตามจริง (theoreticalProfit) หักลดหนี้ทันที ป้องกันหนี้ทิพย์สะสม
+            // ยอดเงินยังไม่ขยับใน DOM (เน็ตช้า แต่เกม Cashout สำเร็จจริง หรือรอยืนยันยอด)
+            // 🎯 ป้องกัน Phantom Profit: เมื่อยอดเงินไม่เพิ่มขึ้นจริง ห้ามหักลดหนี้เด็ดขาด
+            actualProfit = 0.0;
             debugPrint(
-              '⚡ [WIN CONFIRMED BY CASHOUT] [${mode.displayName}] ชนะ Cashout สำเร็จ 100% (DOM ดีเลย์) -> ใช้กำไรจริง +${theoreticalProfit.toStringAsFixed(8)} หักลดหนี้สะสมทันที ไม่ให้หนี้บวมทิพย์!',
+              '⚡ [WIN PENDING BALANCE CONFIRMATION] [${mode.displayName}] ชนะ Cashout จากภาพ แต่ยอดเงินยังไม่ขยับใน DOM -> ตั้ง actualProfit = 0.0 ไม่หักลดหนี้สะสมเพื่อป้องกันหนี้ทิพย์/กำไรทิพย์!',
             );
           }
           // 🏛️ PILLAR 4: MILESTONE PROFIT BANKING & COMPOUNDING
@@ -2702,8 +3009,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
               transitionRecoveryState(mode, RecoveryState.normal,
                   reason: 'Recovery WIN - full debt cleared -> return to normal Base Bet');
               if (currentBalForCheck > 0.00000001) {
-                state.sessionMaxBalance = currentBalForCheck;
-                state.protectedPrincipal = currentBalForCheck * 0.97;
+                state.sessionMaxBalance = max(state.sessionMaxBalance, currentBalForCheck);
+                state.protectedPrincipal = max(state.protectedPrincipal ?? 0.0, currentBalForCheck * 0.97);
               }
               debugPrint('🎉 [100% RECOVERY VICTORY] 🌟 [${mode.displayName}] ไม้ทวงหนี้ชนะสำเร็จ! ล้างหนี้เป็น 0.00000000 ครบ 100% -> กลับสู่การเดิน Base Bet ปกติ');
             } else {
@@ -3453,6 +3760,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     final state = getState(targetMode);
     final controller = getWebViewController(targetMode);
     if (controller == null) return;
+    _isTypingBetAmount = true;
     try {
       double betToFormat = amount;
       final double effectiveBalance = maxBalance ?? (state.lastSettledBalance > 0.00000001 ? state.lastSettledBalance : 0.0);
@@ -3481,23 +3789,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
         }
       }
 
-      // Hide software keyboard from Flutter layer
+      // Hide software keyboard from Flutter layer (SEC-05)
       SystemChannels.textInput.invokeMethod('TextInput.hide');
       FocusManager.instance.primaryFocus?.unfocus();
 
-      // Set typing flags in WebView using un-enumerable Symbol
-      await controller.evaluateJavascript(
-        source: "window[Symbol.for('gp_typing_busy')] = true; window[Symbol.for('gp_typing_done')] = false;",
-      ).timeout(const Duration(milliseconds: 300), onTimeout: () => null);
-
+      // Launch human-paced typing routine without polluting window with Symbols (SEC-02)
       await controller.evaluateJavascript(
         source: """
           (function(val) {
-            var sBusy = Symbol.for('gp_typing_busy');
-            var sDone = Symbol.for('gp_typing_done');
-            window[sBusy] = true;
-            window[sDone] = false;
-
             return new Promise((resolve) => {
               function findInput() {
                 let isMinesMode = window.location.href.includes('polpick') || window.location.href.includes('gems.php') || window.location.href.includes('mines');
@@ -3530,7 +3829,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 // 2. Buttons container (Min, Max, 2x, 1/2)
                 let buttons = Array.from(document.querySelectorAll('button, a, div, span'));
                 for (let b of buttons) {
-                  let txt = (b.innerText || '').trim().toLowerCase();
+                  let txt = (b.innerText || b.textContent || '').trim().toLowerCase();
                   if (txt === 'min' || txt === 'max' || txt === '2x' || txt === '1/2' || txt === '½') {
                     let parent = b.parentElement;
                     for (let i = 0; i < 3; i++) {
@@ -3560,15 +3859,15 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
               var input = findInput();
               if (!input) {
-                window[sBusy] = false;
-                window[sDone] = true;
                 resolve(false);
                 return;
               }
 
-              // 🛡️ คำสั่งผู้ใช้: "ห้ามไม่ให้ Keyboard ขื้นมาครับ" (Suppress Soft Keyboard without readOnly anomaly)
-              const oldInputMode = input.getAttribute('inputmode');
-              input.setAttribute('inputmode', 'none');
+              // Set non-enumerable flags on the input element (SEC-02 compliant: no window symbols)
+              Object.defineProperty(input, '_typingActive', { value: true, writable: true, configurable: true, enumerable: false });
+              Object.defineProperty(input, '_typingDone', { value: false, writable: true, configurable: true, enumerable: false });
+
+              // SEC-05: Preserve natural inputmode. Soft keyboard is hidden at Flutter layer.
 
               const nativeProp = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
               const setter = nativeProp ? nativeProp.set : null;
@@ -3579,13 +3878,11 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 } else {
                   input.value = v;
                 }
-                try {
-                  input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                } catch(e){}
               }
               
               // Clear input
               setVal('');
+              try { input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true })); } catch(e){}
               
               let i = 0;
               let currentText = '';
@@ -3593,21 +3890,28 @@ class OverlayButtonsViewModel with ChangeNotifier {
               function typeNext() {
                 if (i < val.length) {
                   const char = val[i];
-                  currentText += char;
-                  setVal(currentText);
+                  const nextText = currentText + char;
                   
                   const isDigit = !isNaN(parseInt(char));
                   const code = isDigit ? ('Digit' + char) : (char === '.' ? 'Period' : ('Key' + char.toUpperCase()));
                   
+                  // SEC-06: W3C compliant event ordering:
+                  // 1. keydown
                   try {
                     input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: code, bubbles: true, cancelable: true }));
                   } catch(e){}
+                  // 2. beforeinput (BEFORE value update so listeners inspect prior state)
                   try {
                     input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true, cancelable: true }));
                   } catch(e){}
+                  // 3. Update value
+                  currentText = nextText;
+                  setVal(currentText);
+                  // 4. input event (AFTER value update)
                   try {
                     input.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
                   } catch(e){}
+                  // 5. keyup
                   try {
                     input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: code, bubbles: true, cancelable: true }));
                   } catch(e){}
@@ -3623,19 +3927,14 @@ class OverlayButtonsViewModel with ChangeNotifier {
                   try { input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' })); } catch(e){}
                   try { input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' })); } catch(e){}
                   
-                  // Restore original attributes and blur
-                  if (oldInputMode) {
-                    input.setAttribute('inputmode', oldInputMode);
-                  } else {
-                    input.removeAttribute('inputmode');
-                  }
                   if (input.blur) input.blur();
 
+                  Object.defineProperty(input, '_typingActive', { value: false, writable: true, configurable: true, enumerable: false });
+                  Object.defineProperty(input, '_typingDone', { value: true, writable: true, configurable: true, enumerable: false });
+
                   setTimeout(() => {
-                    window[sBusy] = false;
-                    window[sDone] = true;
                     resolve(true);
-                  }, 200 + Math.random() * 150);
+                  }, 150 + Math.random() * 100);
                 }
               }
               
@@ -3646,14 +3945,82 @@ class OverlayButtonsViewModel with ChangeNotifier {
       ).timeout(const Duration(seconds: 30), onTimeout: () => null);
 
       debugPrint('[BET SET] ⌨️ [${targetMode.displayName}] Typing $amountStr started (Human-like pacing)...');
-      // Wait for JavaScript typing to complete (polling Symbol flag)
+      // 🛡️ SEC-02: Wait for JavaScript typing to complete by checking DOM input value (NO window Symbols)
       final stopwatch = Stopwatch()..start();
       const int maxTypingWaitMs = 30000;
       bool isCompleted = false;
 
       while (stopwatch.elapsedMilliseconds < maxTypingWaitMs) {
         final dynamic res = await controller.evaluateJavascript(
-          source: "window[Symbol.for('gp_typing_done')] === true && window[Symbol.for('gp_typing_busy')] !== true",
+          source: """
+            (function() {
+              function findInput() {
+                let isMinesMode = window.location.href.includes('polpick') || window.location.href.includes('gems.php') || window.location.href.includes('mines');
+                if (isMinesMode) {
+                  let allInputs = Array.from(document.querySelectorAll('input')).filter(inp => {
+                    let t = (inp.type || 'text').toLowerCase();
+                    if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
+                    let rect = inp.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                  });
+                  if (allInputs.length > 0) {
+                    allInputs.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+                    return allInputs[0];
+                  }
+                }
+
+                // 1. Direct explicit selectors for bet amount
+                let selectors = [
+                  'input#amount', 'input#bet_amount', 'input#bet-amount',
+                  'input[name="amount"]', 'input[name="bet_amount"]',
+                  'input.bet-amount', 'input.bet_amount',
+                  'input[placeholder*="Amount" i]', 'input[placeholder*="Bet" i]',
+                  'input[aria-label*="amount" i]'
+                ];
+                for (let s of selectors) {
+                  let el = document.querySelector(s);
+                  if (el && el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio') return el;
+                }
+
+                // 2. Buttons container (Min, Max, 2x, 1/2) for Towers & general modes
+                let buttons = Array.from(document.querySelectorAll('button, a, div, span'));
+                for (let b of buttons) {
+                  let txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                  if (txt === 'min' || txt === 'max' || txt === '2x' || txt === '1/2' || txt === '½') {
+                    let parent = b.parentElement;
+                    for (let i = 0; i < 3; i++) {
+                      if (!parent) break;
+                      let inp = parent.querySelector('input');
+                      if (inp && inp.type !== 'hidden') {
+                        let nameOrId = (inp.name || inp.id || inp.placeholder || '').toLowerCase();
+                        if (!nameOrId.includes('mine') && !nameOrId.includes('count')) return inp;
+                      }
+                      parent = parent.parentElement;
+                    }
+                  }
+                }
+
+                // 3. Filtered inputs ignoring hidden/mines-count
+                let inputs = Array.from(document.querySelectorAll('input')).filter(inp => {
+                  let t = (inp.type || 'text').toLowerCase();
+                  if (t === 'hidden' || t === 'password' || t === 'checkbox' || t === 'radio' || t === 'submit' || t === 'search') return false;
+                  let nameOrId = (inp.name || inp.id || inp.placeholder || inp.getAttribute('aria-label') || '').toLowerCase();
+                  if (nameOrId.includes('mine') || nameOrId.includes('bomb') || nameOrId.includes('count')) return false;
+                  let rect = inp.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                });
+                if (inputs.length > 0) return inputs[0];
+                return null;
+              }
+
+              let inp = findInput();
+              if (!inp) return false;
+              if (inp._typingActive === true) return false;
+              if (inp._typingDone !== true) return false;
+              let cur = (inp.value || '').trim();
+              return cur === '$amountStr' || Math.abs(parseFloat(cur.replace(/,/g, '')) - ${double.tryParse(amountStr) ?? 0}) < 0.00000002;
+            })()
+          """,
         ).timeout(const Duration(milliseconds: 300), onTimeout: () => null);
 
         if (res == true || res.toString() == 'true') {
@@ -3674,6 +4041,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
       await Future.delayed(Duration(milliseconds: handRestMs));
     } catch (e) {
       debugPrint('[BET SET] Error setting bet: $e');
+    } finally {
+      _isTypingBetAmount = false;
     }
   }
 
@@ -3686,7 +4055,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
     try {
       final dynamic res = await controller.evaluateJavascript(source: """
         (function() {
-          let elements = Array.from(document.querySelectorAll('*'));
+          let elements = Array.from(document.querySelectorAll('.tile, .grid-tile, .mine, .gem, .grid, .board, [class*="gem"], [class*="tile"], [class*="cell"], [class*="safe"], button, div, span'));
           for (let el of elements) {
             let txt = (el.innerText || el.textContent || '').trim();
             if (txt.includes('💎') || txt.includes('gem') || txt.includes('diamond')) {
@@ -3733,6 +4102,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
   }
 
   Future<String> _detectVisualOutcome(String markerId, {GameMode? mode}) async {
+    if (detectVisualOutcomeOverride != null) {
+      return detectVisualOutcomeOverride!(markerId, mode: mode);
+    }
     final targetMode = mode ?? _activeGameMode;
     final controller = getWebViewController(targetMode);
     if (controller == null) return 'none';
@@ -3805,6 +4177,181 @@ class OverlayButtonsViewModel with ChangeNotifier {
     } catch (_) {
       return 'none';
     }
+  }
+
+  /// 🛡️ Helper to check whether M0 button status has changed away from 'bet'
+  Future<bool> _isM0StatusChangedAwayFromBet({GameMode? mode}) async {
+    final targetMode = mode ?? _activeGameMode;
+    final String status = await _detectVisualOutcome('M0', mode: targetMode);
+    if (status == 'cashout' || (status != 'bet' && status != 'none')) {
+      return true;
+    }
+
+    final controller = getWebViewController(targetMode);
+    if (controller != null) {
+      try {
+        final buttonList = getButtons(targetMode);
+        final button = buttonList.firstWhere(
+          (b) => b.id == 'M0',
+          orElse: () => buttonList.first,
+        );
+        if (button.position != Offset.zero) {
+          final double scale = _webViewTextZoom / 100.0;
+          final int x = ((button.position.dx + 24.0 - _webViewOffset.dx) / scale).toInt();
+          final int y = ((button.position.dy + 24.0 - _webViewOffset.dy) / scale).toInt();
+          final dynamic res = await controller.evaluateJavascript(source: """
+            (function(x, y) {
+              let el = document.elementFromPoint(x, y);
+              if (!el) return false;
+              let current = el;
+              for (let i = 0; i < 5; i++) {
+                if (!current) break;
+                const text = (current.innerText || current.value || current.textContent || "").toUpperCase().trim();
+                if (text.includes('CASH') || text.includes('ถอน') || text.includes('รับเงิน') || text.includes('TAKE')) return true;
+                if (current.disabled || current.getAttribute('aria-disabled') === 'true' || current.classList.contains('disabled')) {
+                  return true;
+                }
+                current = current.parentElement;
+              }
+              return false;
+            })($x, $y);
+          """).timeout(const Duration(milliseconds: 300), onTimeout: () => false);
+          if (res == true) return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  /// 🛡️ Helper to check whether target tile or grid is active
+  Future<bool> _isGridOrTargetTileActive({GameMode? mode, String? targetMarker}) async {
+    if (gridOrTileActiveOverride != null) {
+      return gridOrTileActiveOverride!(mode: mode, targetMarker: targetMarker);
+    }
+    final targetMode = mode ?? _activeGameMode;
+
+    if (targetMarker != null) {
+      final String markerStatus = await _detectVisualOutcome(targetMarker, mode: targetMode);
+      if (markerStatus == 'pick' || markerStatus == 'gem') {
+        return true;
+      }
+    }
+
+    final controller = getWebViewController(targetMode);
+    if (controller == null) return false;
+
+    try {
+      final dynamic res = await controller.evaluateJavascript(source: """
+        (function() {
+          const activeContainers = document.querySelectorAll(
+            '.game-active, .in-game, .playing, [data-state="active"], [data-game-status="running"], .grid-active, .active-row, .tower-row.active'
+          );
+          if (activeContainers.length > 0) return true;
+
+          const activeTiles = document.querySelectorAll(
+            '.tile:not(.disabled):not([disabled]), .grid-tile:not(.disabled):not([disabled]), button.tile:not(:disabled), .tower-tile.active, .tower-cell.active'
+          );
+          for (let el of activeTiles) {
+            let r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return true;
+          }
+
+          return false;
+        })()
+      """).timeout(const Duration(milliseconds: 300), onTimeout: () => false);
+
+      if (res == true) return true;
+    } catch (_) {}
+
+    return false;
+  }
+
+  /// 🛡️ Actively poll and verify that the game has actually started on the server before clicking M1-M3:
+  /// a) M0 button status changes away from 'bet' (e.g. becomes 'cashout' or changes state via _detectVisualOutcome), OR
+  /// b) Balance has updated / bet has been deducted (balance < balanceBeforeRound), OR
+  /// c) Target tile / grid becomes active.
+  Future<bool> checkDomGameReadiness({
+    required GameMode mode,
+    required double balanceBeforeRound,
+    String? targetMarker,
+  }) async {
+    if (domReadinessCheckerOverride != null) {
+      return domReadinessCheckerOverride!(
+        mode: mode,
+        balanceBeforeRound: balanceBeforeRound,
+        targetMarker: targetMarker,
+      );
+    }
+
+    // a) M0 button status changes away from 'bet'
+    if (await _isM0StatusChangedAwayFromBet(mode: mode)) {
+      debugPrint('[DOM READINESS 🛡️] [${mode.displayName}] Verified: M0 button status changed away from "bet".');
+      return true;
+    }
+
+    // b) Balance has updated / bet has been deducted (balance < balanceBeforeRound)
+    if (balanceBeforeRound > 0.00000001) {
+      final double currentBal = await _getBalanceDouble(mode: mode);
+      if (currentBal > 0.00000001 && currentBal < balanceBeforeRound - 0.00000001) {
+        debugPrint(
+          '[DOM READINESS 🛡️] [${mode.displayName}] Verified: Balance deducted (${currentBal.toStringAsFixed(8)} < ${balanceBeforeRound.toStringAsFixed(8)}).',
+        );
+        return true;
+      }
+    }
+
+    // c) Target tile / grid becomes active
+    if (await _isGridOrTargetTileActive(mode: mode, targetMarker: targetMarker)) {
+      debugPrint('[DOM READINESS 🛡️] [${mode.displayName}] Verified: Target tile / grid is active.');
+      return true;
+    }
+
+    return false;
+  }
+
+  /// 🛡️ Slow Network Watchdog: Polls DOM state readiness up to [maxWait] (default 15s).
+  /// If after 15s the game still has not started on the web (network lag / stall),
+  /// logs warning and returns false to prevent premature clicks.
+  Future<bool> waitForDomGameReadiness({
+    required GameMode mode,
+    required double balanceBeforeRound,
+    required int runToken,
+    String? targetMarker,
+    Duration? maxWait,
+    Duration? pollInterval,
+  }) async {
+    final timeout = maxWait ?? domReadinessWatchdogTimeout;
+    final interval = pollInterval ?? domReadinessPollInterval;
+    final stopwatch = Stopwatch()..start();
+
+    debugPrint(
+      '[DOM READINESS 🛡️] 🔍 [${mode.displayName}] Polling DOM readiness (Watchdog max wait: ${timeout.inSeconds}s)...',
+    );
+
+    while (!_shouldAbort(runToken, mode: mode)) {
+      final bool ready = await checkDomGameReadiness(
+        mode: mode,
+        balanceBeforeRound: balanceBeforeRound,
+        targetMarker: targetMarker,
+      );
+
+      if (ready) {
+        debugPrint(
+          '[DOM READINESS 🛡️] 🟢 [${mode.displayName}] Game start confirmed after ${stopwatch.elapsedMilliseconds}ms.',
+        );
+        return true;
+      }
+
+      if (stopwatch.elapsed >= timeout) {
+        debugPrint('[NETWORK STALL WATCHDOG ⚠️] Game did not start within 15s due to slow internet! Aborting premature click.');
+        return false;
+      }
+
+      final delayMs = (interval.inMilliseconds / _speedMultiplier).round();
+      await Future.delayed(Duration(milliseconds: delayMs));
+    }
+
+    return false;
   }
 
   void addStep(String buttonId) {
@@ -3927,7 +4474,8 @@ class OverlayButtonsViewModel with ChangeNotifier {
                 var match = (el.innerText || el.textContent || el.value || '').trim().match(/([0-9,]+\.[0-9]{4,8})/);
                 if (match) return match[1].replace(/,/g, '');
               }
-              let topElements = Array.from(document.querySelectorAll('*')).filter(el => {
+              var targetSelector = 'header, nav, .top-bar, .navbar, .user-info, .wallet, .balance-container, #balance, .balance, [data-balance], .user-balance, #user_balance, .user_balance, #user-balance, .balance-value, #balance-value, .user-card, .account-info, .user-balance-wrap';
+              let topElements = Array.from(document.querySelectorAll(targetSelector)).filter(el => {
                 let txt = (el.innerText || el.textContent || '').trim();
                 if (!txt || txt.length > 60) return false;
                 return /[0-9,]+\.[0-9]{4,8}/.test(txt);
@@ -4024,7 +4572,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
         (function(targetValStr) {
           // 1. กดปุ่ม 'MIN' ทันทีหากมีในหน้าเว็บ
           let buttons = Array.from(document.querySelectorAll('button, a, div, span'));
-          let minBtn = buttons.find(b => (b.innerText || '').trim().toLowerCase() === 'min');
+          let minBtn = buttons.find(b => (b.innerText || b.textContent || '').trim().toLowerCase() === 'min');
           if (minBtn) {
             try { minBtn.click(); } catch(e){}
           }
@@ -4058,7 +4606,7 @@ class OverlayButtonsViewModel with ChangeNotifier {
 
             // Buttons container (Min, Max, 2x, 1/2)
             for (let b of buttons) {
-              let txt = (b.innerText || '').trim().toLowerCase();
+              let txt = (b.innerText || b.textContent || '').trim().toLowerCase();
               if (txt === 'min' || txt === 'max' || txt === '2x' || txt === '1/2' || txt === '½') {
                 let parent = b.parentElement;
                 for (let i = 0; i < 3; i++) {
@@ -4096,9 +4644,9 @@ class OverlayButtonsViewModel with ChangeNotifier {
             }
             inp.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
             inp.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+            Object.defineProperty(inp, '_typingActive', { value: false, writable: true, configurable: true, enumerable: false });
+            Object.defineProperty(inp, '_typingDone', { value: true, writable: true, configurable: true, enumerable: false });
           }
-          window[Symbol.for('gp_typing_busy')] = false;
-          window[Symbol.for('gp_typing_done')] = true;
         })('$targetStr');
       """).timeout(const Duration(milliseconds: 500), onTimeout: () => null);
     } catch (e) {
